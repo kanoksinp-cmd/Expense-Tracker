@@ -37,7 +37,7 @@ def create_tables():
                   created_by TEXT,
                   updated_by TEXT)''')
     
-    # Migration Logic: ป้องกัน Error แบบในรูป image_0cc07a.png
+    # Migration Logic: ป้องกัน Error เรื่องคอลัมน์ไม่ครบ
     try:
         c.execute('SELECT created_by FROM transactions LIMIT 1')
     except sqlite3.OperationalError:
@@ -64,12 +64,10 @@ def update_transaction(t_id, date, t_type, cat, amount, username, bill_path=None
     conn = get_connection()
     c = conn.cursor()
     if bill_path:
-        # กรณีมีการเปลี่ยนรูปบิลใหม่
         c.execute('''UPDATE transactions 
                      SET date=?, type=?, category=?, amount=?, updated_by=?, bill_path=? 
                      WHERE id=?''', (date, t_type, cat, amount, username, bill_path, t_id))
     else:
-        # กรณีไม่เปลี่ยนรูปบิล (ใช้รูปเดิม)
         c.execute('''UPDATE transactions 
                      SET date=?, type=?, category=?, amount=?, updated_by=? 
                      WHERE id=?''', (date, t_type, cat, amount, username, t_id))
@@ -86,10 +84,13 @@ def delete_transaction(t_id):
 # --- ส่วนหน้าตาโปรแกรม (Streamlit UI) ---
 st.set_page_config(page_title="Group Expense Tracker", page_icon="💰", layout="wide")
 
+# กำหนดตัวแปรสำหรับคุมการเปิด/ปิดรูปภาพและสถานะการแก้ไข
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'editing_id' not in st.session_state:
     st.session_state.editing_id = None
+if 'view_bill_id' not in st.session_state:
+    st.session_state.view_bill_id = None
 
 def main():
     if not st.session_state.logged_in:
@@ -121,7 +122,6 @@ def main():
                     except: st.error("ชื่อนี้ถูกใช้ไปแล้ว")
                     finally: conn.close()
     else:
-        # --- Sidebar ---
         st.sidebar.title(f"👤 {st.session_state.username}")
         if st.sidebar.button("ออกจากระบบ"):
             st.session_state.logged_in = False
@@ -157,7 +157,7 @@ def main():
             conn.close()
 
             if not df.empty:
-                # --- ส่วนแก้ไขรายการ (เพิ่มความสามารถในการเปลี่ยนรูปบิล) ---
+                # --- ส่วนแก้ไขรายการ ---
                 if st.session_state.editing_id:
                     edit_row = df[df['id'] == st.session_state.editing_id].iloc[0]
                     with st.expander(f"🛠️ แก้ไขรายการ ID #{st.session_state.editing_id}", expanded=True):
@@ -169,18 +169,15 @@ def main():
                         new_amt = ec2.number_input("แก้ไขจำนวนเงิน", value=float(edit_row['amount']))
                         
                         st.markdown("---")
-                        st.write("🖼️ **จัดการรูปบิล**")
                         if edit_row['bill_path']:
                             st.image(edit_row['bill_path'], width=200, caption="รูปบิลปัจจุบัน")
-                        new_bill = st.file_uploader("อัปโหลดรูปบิลใหม่เพื่อเปลี่ยน (ทิ้งว่างไว้ถ้าไม่ต้องการเปลี่ยน)", type=['jpg', 'png', 'jpeg'], key="edit_bill_upload")
+                        new_bill = st.file_uploader("เปลี่ยนรูปบิล (ถ้ามี)", type=['jpg', 'png', 'jpeg'], key="edit_bill_upload")
                         
                         eb1, eb2, _ = st.columns([1,1,4])
-                        if eb1.button("✅ ยืนยันการแก้ไข"):
-                            # ตรวจสอบว่ามีการอัปโหลดรูปใหม่ไหม
+                        if eb1.button("✅ บันทึกการแก้ไข"):
                             updated_bill_path = save_bill(new_bill, st.session_state.username) if new_bill else None
                             update_transaction(st.session_state.editing_id, new_date.strftime("%Y-%m-%d"), new_type, new_cat, new_amt, st.session_state.username, updated_bill_path)
                             st.session_state.editing_id = None
-                            st.success("แก้ไขข้อมูลเรียบร้อย!")
                             st.rerun()
                         if eb2.button("❌ ยกเลิก"):
                             st.session_state.editing_id = None
@@ -195,16 +192,23 @@ def main():
                     h[i].markdown(f"**{head}**")
 
                 for _, row in df.sort_values('id', ascending=False).iterrows():
+                    row_id = row['id']
                     c = st.columns(cols_width)
-                    c[0].write(f"#{row['id']}")
+                    c[0].write(f"#{row_id}")
                     c[1].write(row['date'])
                     c[2].write(f"{row['type']} ({row['category']})")
                     c[3].write(f"฿{row['amount']:,.2f}")
                     
-                    # คอลัมน์แสดงรูปบิล
+                    # --- ระบบดูบิลและหุบบิล ---
                     if row['bill_path'] and os.path.exists(row['bill_path']):
-                        if c[4].button("🖼️ ดู", key=f"v_{row['id']}"):
-                            st.image(row['bill_path'], caption=f"บิลรายการ #{row['id']}", width=400)
+                        if st.session_state.view_bill_id == row_id:
+                            if c[4].button("❌ ปิด", key=f"hide_{row_id}"):
+                                st.session_state.view_bill_id = None
+                                st.rerun()
+                        else:
+                            if c[4].button("🖼️ ดู", key=f"show_{row_id}"):
+                                st.session_state.view_bill_id = row_id
+                                st.rerun()
                     else:
                         c[4].write("-")
 
@@ -213,12 +217,17 @@ def main():
                     c[6].markdown(f":{u_color}[{row['updated_by']}]")
                     
                     e_btn, d_btn = c[7].columns(2)
-                    if e_btn.button("📝", key=f"e_{row['id']}"):
-                        st.session_state.editing_id = row['id']
+                    if e_btn.button("📝", key=f"e_{row_id}"):
+                        st.session_state.editing_id = row_id
                         st.rerun()
-                    if d_btn.button("🗑️", key=f"d_{row['id']}"):
-                        delete_transaction(row['id'])
+                    if d_btn.button("🗑️", key=f"d_{row_id}"):
+                        delete_transaction(row_id)
                         st.rerun()
+                    
+                    # แสดงรูปบิลใต้แถวข้อมูลหากเลือกดูรายการนี้
+                    if st.session_state.view_bill_id == row_id:
+                        st.image(row['bill_path'], caption=f"บิลรายการ #{row_id}", width=500)
+                    
                     st.divider()
             else:
                 st.info("ยังไม่มีข้อมูลบันทึกไว้")
