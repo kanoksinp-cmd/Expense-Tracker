@@ -37,7 +37,7 @@ def create_tables():
                   created_by TEXT,
                   updated_by TEXT)''')
     
-    # Migration Logic: เพิ่มคอลัมน์ถ้ายังไม่มี
+    # Migration Logic: ป้องกัน Error จาก image_0c4ff8.png
     try:
         c.execute('SELECT created_by FROM transactions LIMIT 1')
     except sqlite3.OperationalError:
@@ -153,33 +153,47 @@ def main():
 
         # --- สรุปภาพรวม ---
         elif menu == "สรุปภาพรวมทั้งหมด":
-            st.header("📊 รายการทั้งหมด")
+            st.header("📊 สรุปภาพรวมของกลุ่ม")
             conn = get_connection()
             df = pd.read_sql_query('SELECT * FROM transactions', conn)
             conn.close()
 
+            # --- ส่วนแสดงยอดคงเหลือด้านบนสุด ---
             if not df.empty:
-                # ส่วนแก้ไข
+                total_income = df[df['type'] == 'รายรับ']['amount'].sum()
+                total_expense = df[df['type'] == 'รายจ่าย']['amount'].sum()
+                balance = total_income - total_expense
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("รายรับรวม", f"฿{total_income:,.2f}")
+                m2.metric("รายจ่ายรวม", f"฿{total_expense:,.2f}", delta_color="inverse")
+                m3.metric("ยอดคงเหลือสุทธิ", f"฿{balance:,.2f}")
+                st.divider()
+
+            if not df.empty:
+                # ส่วนแก้ไขรายการ
                 if st.session_state.editing_id:
                     edit_row = df[df['id'] == st.session_state.editing_id].iloc[0]
                     with st.expander(f"🛠️ แก้ไขรายการ #{st.session_state.editing_id}", expanded=True):
                         ec1, ec2 = st.columns(2)
                         new_date = ec1.date_input("วันที่", datetime.strptime(edit_row['date'], "%Y-%m-%d"))
+                        new_type = ec1.selectbox("ประเภท", ["รายรับ", "รายจ่าย"], index=0 if edit_row['type'] == "รายรับ" else 1)
+                        new_cat = ec2.selectbox("หมวดหมู่", ["อาหาร", "เดินทาง", "ส่วนกลาง", "อื่นๆ"], 
+                                               index=["อาหาร", "เดินทาง", "ส่วนกลาง", "อื่นๆ"].index(edit_row['category']))
                         new_amt = ec2.number_input("จำนวนเงิน", value=float(edit_row['amount']))
                         new_bill = st.file_uploader("เปลี่ยนรูปบิล (ถ้ามี)", type=['jpg', 'png', 'jpeg'])
                         
                         eb1, eb2, _ = st.columns([1,1,4])
-                        if eb1.button("✅ ยืนยัน"):
+                        if eb1.button("✅ ยืนยันการแก้ไข"):
                             new_path = save_bill(new_bill, st.session_state.username) if new_bill else None
-                            update_transaction(st.session_state.editing_id, new_date.strftime("%Y-%m-%d"), edit_row['type'], edit_row['category'], new_amt, st.session_state.username, new_path)
+                            update_transaction(st.session_state.editing_id, new_date.strftime("%Y-%m-%d"), new_type, new_cat, new_amt, st.session_state.username, new_path)
                             st.session_state.editing_id = None
                             st.rerun()
                         if eb2.button("❌ ยกเลิก"):
                             st.session_state.editing_id = None
                             st.rerun()
 
-                st.divider()
-                # หัวตาราง
+                # หัวตารางข้อมูล
                 cols_width = [0.5, 1.2, 1.5, 1.2, 1, 1.2, 1.2, 1]
                 h = st.columns(cols_width)
                 headers = ["ID", "วันที่", "ประเภท (หมวด)", "จำนวน", "บิล", "บันทึกโดย", "แก้ไขล่าสุด", "จัดการ"]
@@ -192,15 +206,16 @@ def main():
                     c[0].write(f"#{row_id}")
                     c[1].write(row['date'])
                     c[2].write(f"{row['type']} ({row['category']})")
-                    c[3].write(f"฿{row['amount']:,.2f}")
                     
-                    # --- แก้ไขจุดที่ทำให้เกิด TypeError ใน image_b57a16.png ---
+                    # สีตามประเภทเงิน
+                    amt_color = "green" if row['type'] == "รายรับ" else "red"
+                    c[3].markdown(f":{amt_color}[฿{row['amount']:,.2f}]")
+                    
+                    # ตรวจสอบบิลป้องกัน TypeError จาก image_0c4ff8.png
                     path = row['bill_path']
-                    # ตรวจสอบว่า path ไม่เป็น None และไฟล์มีอยู่จริง
                     has_bill = False
-                    if path and isinstance(path, str):
-                        if os.path.exists(path):
-                            has_bill = True
+                    if path and isinstance(path, str) and os.path.exists(path):
+                        has_bill = True
 
                     if has_bill:
                         if st.session_state.view_bill_id == row_id:
@@ -226,12 +241,13 @@ def main():
                         delete_transaction(row_id)
                         st.rerun()
                     
+                    # แสดงรูปบิลพร้อมปุ่มหุบ
                     if st.session_state.view_bill_id == row_id and has_bill:
                         st.image(path, caption=f"บิลรายการ #{row_id}", width=500)
                     
                     st.divider()
             else:
-                st.info("ยังไม่มีข้อมูล")
+                st.info("ยังไม่มีข้อมูลบันทึกในระบบ")
 
 if __name__ == '__main__':
     main()
