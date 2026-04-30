@@ -1,2 +1,5 @@
 streamlit
 pandas
+sqlite3
+os
+hashlib
