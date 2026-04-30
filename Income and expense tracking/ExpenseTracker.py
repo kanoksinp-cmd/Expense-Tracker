@@ -1,77 +1,119 @@
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <title>Python Code Viewer - Expense Tracker</title>
-    <!-- ใช้ Prism.js เพื่อให้ Code สีสวยงาม -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; padding: 20px; background: #eef2f3; color: #333; }
-        .container { max-width: 950px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        
-        /* ส่วนแสดงข้อมูล User และ ยอดคงเหลือ */
-        .dashboard-header { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            margin-bottom: 25px; 
-            padding: 15px; 
-            background: #f8f9fa; 
-            border-radius: 8px;
-            border-left: 5px solid #2ecc71;
-        }
-        .user-info { font-weight: bold; color: #2c3e50; }
-        .balance-card { text-align: right; }
-        .balance-amount { 
-            font-size: 1.5em; 
-            font-weight: bold; 
-            color: #27ae60; 
-        }
-
-        h1 { color: #2c3e50; margin-top: 0; }
-        .badge { background: #3498db; color: white; padding: 3px 10px; border-radius: 4px; font-size: 0.9em; }
-        pre { border-radius: 8px !important; }
-    </style>
-</head>
-<body>
-
-    <div class="container">
-        <!-- ส่วนที่เพิ่มใหม่: ข้อมูลผู้ใช้และยอดเงิน -->
-        <div class="dashboard-header">
-            <div class="user-info">
-                <span>👤 ผู้บันทึก: </span>
-                <span id="display-username">Admin_User</span> <!-- เปลี่ยนชื่อตรงนี้ -->
-            </div>
-            <div class="balance-card">
-                <div>ยอดคงเหลือคงเหลือ</div>
-                <div class="balance-amount">฿ 12,500.00</div> <!-- เปลี่ยนยอดเงินตรงนี้ -->
-            </div>
-        </div>
-
-        <hr>
-
-        <h1>Source Code: Expense Tracker</h1>
-        <p>ภาษาที่ใช้: <span class="badge">Python (Streamlit Framework)</span></p>
-        
-        <pre><code class="language-python">
-# ก๊อปปี้โค้ด Python ทั้งหมดมาวางที่นี่
 import streamlit as st
 import pandas as pd
 import sqlite3
 import os
 from datetime import datetime
 
-# --- DATABASE LOGIC ---
-def init_db():
-    conn = sqlite3.connect('expenses.db')
-    # โค้ดจัดการฐานข้อมูลของคุณ...
-    conn.close()
+# --- การตั้งค่าฐานข้อมูล ---
+conn = sqlite3.connect('expense_tracker.db', check_same_thread=False)
+c = conn.cursor()
 
-# ... (ส่วนที่เหลือของโค้ด Streamlit) ...
-        </code></pre>
-    </div>
+def create_tables():
+    # ตารางผู้ใช้งาน
+    c.execute('CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, password TEXT)')
+    # ตารางบันทึกรายรับรายจ่าย
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  username TEXT, 
+                  date TEXT, 
+                  type TEXT, 
+                  category TEXT, 
+                  amount REAL, 
+                  bill_path TEXT)''')
+    conn.commit()
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-</body>
-</html>
+create_tables()
+
+# --- ฟังก์ชันจัดการไฟล์ ---
+if not os.path.exists("bills"):
+    os.makedirs("bills")
+
+def save_bill(uploaded_file, username):
+    if uploaded_file is not None:
+        file_path = f"bills/{username}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uploaded_file.name}"
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
+    return None
+
+# --- ส่วนของ UI ---
+st.title("💰 โปรแกรมบันทึกรายรับ-รายจ่าย")
+
+# ระบบ Login แบบง่าย
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    menu = ["Login", "Register"]
+    choice = st.sidebar.selectbox("เมนูจัดการผู้ใช้", menu)
+
+    if choice == "Register":
+        new_user = st.text_input("Username")
+        new_pw = st.text_input("Password", type='password')
+        if st.button("สมัครสมาชิก"):
+            try:
+                c.execute('INSERT INTO users(username, password) VALUES (?,?)', (new_user, new_pw))
+                conn.commit()
+                st.success("สมัครสมาชิกสำเร็จ! กรุณา Login")
+            except:
+                st.error("Username นี้มีผู้ใช้แล้ว")
+
+    elif choice == "Login":
+        user = st.text_input("Username")
+        pw = st.text_input("Password", type='password')
+        if st.button("เข้าสู่ระบบ"):
+            c.execute('SELECT * FROM users WHERE username = ? AND password = ?', (user, pw))
+            if c.fetchone():
+                st.session_state.logged_in = True
+                st.session_state.username = user
+                st.rerun()
+            else:
+                st.error("Username หรือ Password ไม่ถูกต้อง")
+
+else:
+    # --- หน้าหลักหลังจาก Login ---
+    st.sidebar.write(f"สวัสดีคุณ: **{st.session_state.username}**")
+    if st.sidebar.button("Logout"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+    tab1, tab2 = st.tabs(["📝 บันทึกรายการ", "📊 ประวัติและสรุปผล"])
+
+    with tab1:
+        st.header("เพิ่มรายการใหม่")
+        col1, col2 = st.columns(2)
+        with col1:
+            t_date = st.date_input("วันที่", datetime.now())
+            t_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่าย"])
+            t_amount = st.number_input("จำนวนเงิน", min_value=0.0, step=1.0)
+        with col2:
+            t_cat = st.text_input("หมวดหมู่ (เช่น อาหาร, เงินเดือน)")
+            t_bill = st.file_uploader("อัปโหลดบิล/ใบเสร็จ", type=['jpg', 'png', 'pdf'])
+
+        if st.button("บันทึกข้อมูล"):
+            bill_path = save_bill(t_bill, st.session_state.username)
+            c.execute('''INSERT INTO transactions(username, date, type, category, amount, bill_path) 
+                         VALUES (?,?,?,?,?,?)''', 
+                      (st.session_state.username, t_date.strftime("%Y-%m-%d"), t_type, t_cat, t_amount, bill_path))
+            conn.commit()
+            st.success("บันทึกรายการเรียบร้อย!")
+
+    with tab2:
+        st.header("ประวัติการทำรายการ")
+        query = 'SELECT date, type, category, amount, bill_path FROM transactions WHERE username = ? ORDER BY date DESC'
+        df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
+        
+        if not df.empty:
+            st.dataframe(df.drop(columns=['bill_path']), use_container_width=True)
+            
+            # ส่วนแสดงรูปภาพบิล
+            st.subheader("🔍 ดูรูปภาพบิล")
+            row_idx = st.number_input("เลือกแถวที่ต้องการดูบิล (0, 1, 2...)", min_value=0, max_value=len(df)-1, step=1)
+            selected_bill = df.iloc[row_idx]['bill_path']
+            
+            if selected_bill and os.path.exists(selected_bill):
+                st.image(selected_bill, caption="หลักฐานการจ่ายเงิน")
+            else:
+                st.info("รายการนี้ไม่มีการอัปโหลดบิลไว้")
+        else:
+            st.info("ยังไม่มีข้อมูลบันทึก")
