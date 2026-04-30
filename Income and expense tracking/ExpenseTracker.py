@@ -2,16 +2,32 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
+import hashlib
 from datetime import datetime
 
-# --- การตั้งค่าฐานข้อมูล ---
-conn = sqlite3.connect('expense_tracker.db', check_same_thread=False)
-c = conn.cursor()
+# --- Configuration & Database ---
+DB_FILE = 'expense_tracker.db'
+BILL_DIR = "bills"
+
+if not os.path.exists(BILL_DIR):
+    os.makedirs(BILL_DIR)
+
+def make_hashes(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+def check_hashes(password, hashed_text):
+    if make_hashes(password) == hashed_text:
+        return hashed_text
+    return False
+
+def get_connection():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    return conn
 
 def create_tables():
-    # ตารางผู้ใช้งาน
+    conn = get_connection()
+    c = conn.cursor()
     c.execute('CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, password TEXT)')
-    # ตารางบันทึกรายรับรายจ่าย
     c.execute('''CREATE TABLE IF NOT EXISTS transactions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   username TEXT, 
@@ -21,99 +37,149 @@ def create_tables():
                   amount REAL, 
                   bill_path TEXT)''')
     conn.commit()
+    conn.close()
 
 create_tables()
 
-# --- ฟังก์ชันจัดการไฟล์ ---
-if not os.path.exists("bills"):
-    os.makedirs("bills")
-
+# --- Functions ---
 def save_bill(uploaded_file, username):
     if uploaded_file is not None:
-        file_path = f"bills/{username}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uploaded_file.name}"
+        file_ext = uploaded_file.name.split('.')[-1]
+        filename = f"{username}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_ext}"
+        file_path = os.path.join(BILL_DIR, filename)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         return file_path
     return None
 
-# --- ส่วนของ UI ---
-st.title("💰 โปรแกรมบันทึกรายรับ-รายจ่าย")
+# --- UI Setup ---
+st.set_page_config(page_title="Expense Tracker", page_icon="💰", layout="wide")
 
-# ระบบ Login แบบง่าย
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-if not st.session_state.logged_in:
-    menu = ["Login", "Register"]
-    choice = st.sidebar.selectbox("เมนูจัดการผู้ใช้", menu)
-
-    if choice == "Register":
-        new_user = st.text_input("Username")
-        new_pw = st.text_input("Password", type='password')
-        if st.button("สมัครสมาชิก"):
-            try:
-                c.execute('INSERT INTO users(username, password) VALUES (?,?)', (new_user, new_pw))
-                conn.commit()
-                st.success("สมัครสมาชิกสำเร็จ! กรุณา Login")
-            except:
-                st.error("Username นี้มีผู้ใช้แล้ว")
-
-    elif choice == "Login":
-        user = st.text_input("Username")
-        pw = st.text_input("Password", type='password')
-        if st.button("เข้าสู่ระบบ"):
-            c.execute('SELECT * FROM users WHERE username = ? AND password = ?', (user, pw))
-            if c.fetchone():
-                st.session_state.logged_in = True
-                st.session_state.username = user
-                st.rerun()
-            else:
-                st.error("Username หรือ Password ไม่ถูกต้อง")
-
-else:
-    # --- หน้าหลักหลังจาก Login ---
-    st.sidebar.write(f"สวัสดีคุณ: **{st.session_state.username}**")
-    if st.sidebar.button("Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-    tab1, tab2 = st.tabs(["📝 บันทึกรายการ", "📊 ประวัติและสรุปผล"])
-
-    with tab1:
-        st.header("เพิ่มรายการใหม่")
-        col1, col2 = st.columns(2)
-        with col1:
-            t_date = st.date_input("วันที่", datetime.now())
-            t_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่าย"])
-            t_amount = st.number_input("จำนวนเงิน", min_value=0.0, step=1.0)
-        with col2:
-            t_cat = st.text_input("หมวดหมู่ (เช่น อาหาร, เงินเดือน)")
-            t_bill = st.file_uploader("อัปโหลดบิล/ใบเสร็จ", type=['jpg', 'png', 'pdf'])
-
-        if st.button("บันทึกข้อมูล"):
-            bill_path = save_bill(t_bill, st.session_state.username)
-            c.execute('''INSERT INTO transactions(username, date, type, category, amount, bill_path) 
-                         VALUES (?,?,?,?,?,?)''', 
-                      (st.session_state.username, t_date.strftime("%Y-%m-%d"), t_type, t_cat, t_amount, bill_path))
-            conn.commit()
-            st.success("บันทึกรายการเรียบร้อย!")
-
-    with tab2:
-        st.header("ประวัติการทำรายการ")
-        query = 'SELECT date, type, category, amount, bill_path FROM transactions WHERE username = ? ORDER BY date DESC'
-        df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
+# --- Authentication Logic ---
+def main():
+    if not st.session_state.logged_in:
+        st.title("🔒 Access Control")
+        auth_mode = st.tabs(["Login", "Register"])
         
-        if not df.empty:
-            st.dataframe(df.drop(columns=['bill_path']), use_container_width=True)
-            
-            # ส่วนแสดงรูปภาพบิล
-            st.subheader("🔍 ดูรูปภาพบิล")
-            row_idx = st.number_input("เลือกแถวที่ต้องการดูบิล (0, 1, 2...)", min_value=0, max_value=len(df)-1, step=1)
-            selected_bill = df.iloc[row_idx]['bill_path']
-            
-            if selected_bill and os.path.exists(selected_bill):
-                st.image(selected_bill, caption="หลักฐานการจ่ายเงิน")
+        with auth_mode[0]:
+            user = st.text_input("Username", key="login_user")
+            pw = st.text_input("Password", type='password', key="login_pw")
+            if st.button("Login"):
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute('SELECT password FROM users WHERE username = ?', (user,))
+                result = c.fetchone()
+                conn.close()
+                if result and check_hashes(pw, result[0]):
+                    st.session_state.logged_in = True
+                    st.session_state.username = user
+                    st.success(f"Welcome back, {user}!")
+                    st.rerun()
+                else:
+                    st.error("Invalid Username or Password")
+
+        with auth_mode[1]:
+            new_user = st.text_input("New Username")
+            new_pw = st.text_input("New Password", type='password')
+            if st.button("Create Account"):
+                if new_user and new_pw:
+                    conn = get_connection()
+                    c = conn.cursor()
+                    try:
+                        c.execute('INSERT INTO users(username, password) VALUES (?,?)', 
+                                  (new_user, make_hashes(new_pw)))
+                        conn.commit()
+                        st.success("Registration successful! Please login.")
+                    except sqlite3.IntegrityError:
+                        st.error("Username already exists.")
+                    finally:
+                        conn.close()
+                else:
+                    st.warning("Please fill in all fields.")
+
+    else:
+        # --- App Interface (Logged In) ---
+        st.sidebar.title(f"👤 {st.session_state.username}")
+        if st.sidebar.button("Logout"):
+            st.session_state.logged_in = False
+            st.rerun()
+
+        menu = st.sidebar.radio("Navigation", ["Dashboard", "Add Transaction"])
+
+        if menu == "Add Transaction":
+            st.header("📝 New Record")
+            with st.form("transaction_form", clear_on_submit=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    t_date = st.date_input("Date", datetime.now())
+                    t_type = st.selectbox("Type", ["Income", "Expense"])
+                with col2:
+                    t_cat = st.selectbox("Category", ["Food", "Transport", "Bills", "Salary", "Shopping", "Others"])
+                    t_amount = st.number_input("Amount", min_value=0.0, step=0.5)
+                
+                t_bill = st.file_uploader("Upload Receipt (Optional)", type=['jpg', 'png', 'jpeg'])
+                
+                if st.form_submit_button("Save Record"):
+                    bill_path = save_bill(t_bill, st.session_state.username)
+                    conn = get_connection()
+                    c = conn.cursor()
+                    c.execute('''INSERT INTO transactions(username, date, type, category, amount, bill_path) 
+                                 VALUES (?,?,?,?,?,?)''', 
+                              (st.session_state.username, t_date.strftime("%Y-%m-%d"), t_type, t_cat, t_amount, bill_path))
+                    conn.commit()
+                    conn.close()
+                    st.success("Saved successfully!")
+
+        elif menu == "Dashboard":
+            st.header("📊 Financial Summary")
+            conn = get_connection()
+            query = 'SELECT * FROM transactions WHERE username = ?'
+            df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
+            conn.close()
+
+            if not df.empty:
+                # Top-level metrics
+                income = df[df['type'] == 'Income']['amount'].sum()
+                expense = df[df['type'] == 'Expense']['amount'].sum()
+                balance = income - expense
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Income", f"{income:,.2f}")
+                m2.metric("Total Expense", f"{expense:,.2f}")
+                m3.metric("Balance", f"{balance:,.2f}")
+
+                # Charts
+                st.divider()
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    st.subheader("Transaction History")
+                    st.dataframe(df[['date', 'type', 'category', 'amount']].sort_values('date', ascending=False), use_container_width=True)
+                
+                with c2:
+                    st.subheader("Expense by Category")
+                    expense_df = df[df['type'] == 'Expense']
+                    if not expense_df.empty:
+                        pie_data = expense_df.groupby('category')['amount'].sum()
+                        st.pie_chart(pie_data)
+                    else:
+                        st.info("No expense data for chart")
+
+                # Receipt viewer
+                st.divider()
+                st.subheader("🔍 View Receipt")
+                receipt_list = df[df['bill_path'].notnull()]
+                if not receipt_list.empty:
+                    selected_id = st.selectbox("Select Transaction ID", receipt_list['id'])
+                    path = receipt_list[receipt_list['id'] == selected_id]['bill_path'].values[0]
+                    if os.path.exists(path):
+                        st.image(path, width=400)
+                else:
+                    st.info("No receipts uploaded yet.")
             else:
-                st.info("รายการนี้ไม่มีการอัปโหลดบิลไว้")
-        else:
-            st.info("ยังไม่มีข้อมูลบันทึก")
+                st.info("No data available yet. Start by adding a transaction!")
+
+if __name__ == '__main__':
+    main()
