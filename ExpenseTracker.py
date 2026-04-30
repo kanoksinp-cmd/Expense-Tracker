@@ -45,7 +45,6 @@ def create_tables():
             c.execute('ALTER TABLE transactions ADD COLUMN created_by TEXT DEFAULT "System"')
             c.execute('ALTER TABLE transactions ADD COLUMN updated_by TEXT DEFAULT "System"')
         except: pass
-    
     conn.commit()
     conn.close()
 
@@ -66,13 +65,11 @@ def update_transaction(t_id, date, t_type, cat, amount, username, bill_path=None
     conn = get_connection()
     c = conn.cursor()
     if bill_path:
-        c.execute('''UPDATE transactions 
-                     SET date=?, type=?, category=?, amount=?, updated_by=?, bill_path=? 
-                     WHERE id=?''', (date, t_type, cat, amount, username, bill_path, t_id))
+        c.execute('UPDATE transactions SET date=?, type=?, category=?, amount=?, updated_by=?, bill_path=? WHERE id=?', 
+                  (date, t_type, cat, amount, username, bill_path, t_id))
     else:
-        c.execute('''UPDATE transactions 
-                     SET date=?, type=?, category=?, amount=?, updated_by=? 
-                     WHERE id=?''', (date, t_type, cat, amount, username, t_id))
+        c.execute('UPDATE transactions SET date=?, type=?, category=?, amount=?, updated_by=? WHERE id=?', 
+                  (date, t_type, cat, amount, username, t_id))
     conn.commit()
     conn.close()
 
@@ -123,7 +120,6 @@ def main():
                     except: st.error("ชื่อนี้ถูกใช้ไปแล้ว")
                     finally: conn.close()
     else:
-        # --- Sidebar ---
         st.sidebar.title(f"👤 {st.session_state.username}")
         if st.sidebar.button("ออกจากระบบ"):
             st.session_state.logged_in = False
@@ -131,7 +127,6 @@ def main():
 
         menu = st.sidebar.radio("เมนู", ["สรุปภาพรวมทั้งหมด", "บันทึกรายการใหม่"])
 
-        # --- บันทึกรายการใหม่ ---
         if menu == "บันทึกรายการใหม่":
             st.header("📝 เพิ่มรายการใหม่")
             with st.form("add_form", clear_on_submit=True):
@@ -151,103 +146,71 @@ def main():
                     conn.commit()
                     st.success("บันทึกสำเร็จ!")
 
-        # --- สรุปภาพรวม ---
         elif menu == "สรุปภาพรวมทั้งหมด":
-            st.header("📊 สรุปภาพรวมของกลุ่ม")
+            st.header("📊 รายการบันทึกแนวนอน")
             conn = get_connection()
             df = pd.read_sql_query('SELECT * FROM transactions', conn)
             conn.close()
 
-            # --- ส่วนแสดงยอดคงเหลือด้านบนสุด ---
             if not df.empty:
-                total_income = df[df['type'] == 'รายรับ']['amount'].sum()
-                total_expense = df[df['type'] == 'รายจ่าย']['amount'].sum()
-                balance = total_income - total_expense
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("รายรับรวม", f"฿{total_income:,.2f}")
-                m2.metric("รายจ่ายรวม", f"฿{total_expense:,.2f}", delta_color="inverse")
-                m3.metric("ยอดคงเหลือสุทธิ", f"฿{balance:,.2f}")
+                # --- ยอดคงเหลือ ---
+                t_in = df[df['type'] == 'รายรับ']['amount'].sum()
+                t_out = df[df['type'] == 'รายจ่าย']['amount'].sum()
+                st.columns(3)[0].metric("ยอดคงเหลือสุทธิ", f"฿{t_in - t_out:,.2f}")
                 st.divider()
 
-            if not df.empty:
-                # ส่วนแก้ไขรายการ
+                # --- ส่วนแก้ไข ---
                 if st.session_state.editing_id:
                     edit_row = df[df['id'] == st.session_state.editing_id].iloc[0]
                     with st.expander(f"🛠️ แก้ไขรายการ #{st.session_state.editing_id}", expanded=True):
-                        ec1, ec2 = st.columns(2)
-                        new_date = ec1.date_input("วันที่", datetime.strptime(edit_row['date'], "%Y-%m-%d"))
-                        new_type = ec1.selectbox("ประเภท", ["รายรับ", "รายจ่าย"], index=0 if edit_row['type'] == "รายรับ" else 1)
-                        new_cat = ec2.selectbox("หมวดหมู่", ["อาหาร", "เดินทาง", "ส่วนกลาง", "อื่นๆ"], 
-                                               index=["อาหาร", "เดินทาง", "ส่วนกลาง", "อื่นๆ"].index(edit_row['category']))
-                        new_amt = ec2.number_input("จำนวนเงิน", value=float(edit_row['amount']))
-                        new_bill = st.file_uploader("เปลี่ยนรูปบิล (ถ้ามี)", type=['jpg', 'png', 'jpeg'])
-                        
-                        eb1, eb2, _ = st.columns([1,1,4])
-                        if eb1.button("✅ ยืนยันการแก้ไข"):
-                            new_path = save_bill(new_bill, st.session_state.username) if new_bill else None
-                            update_transaction(st.session_state.editing_id, new_date.strftime("%Y-%m-%d"), new_type, new_cat, new_amt, st.session_state.username, new_path)
-                            st.session_state.editing_id = None
-                            st.rerun()
-                        if eb2.button("❌ ยกเลิก"):
+                        c1, c2 = st.columns(2)
+                        n_date = c1.date_input("วันที่", datetime.strptime(edit_row['date'], "%Y-%m-%d"))
+                        n_amt = c2.number_input("เงิน", value=float(edit_row['amount']))
+                        n_bill = st.file_uploader("เปลี่ยนบิล", type=['jpg', 'png', 'jpeg'])
+                        if st.button("ยืนยันการแก้ไข"):
+                            p = save_bill(n_bill, st.session_state.username) if n_bill else None
+                            update_transaction(st.session_state.editing_id, n_date.strftime("%Y-%m-%d"), edit_row['type'], edit_row['category'], n_amt, st.session_state.username, p)
                             st.session_state.editing_id = None
                             st.rerun()
 
-                # หัวตารางข้อมูล
-                cols_width = [0.5, 1.2, 1.5, 1.2, 1, 1.2, 1.2, 1]
-                h = st.columns(cols_width)
-                headers = ["ID", "วันที่", "ประเภท (หมวด)", "จำนวน", "บิล", "บันทึกโดย", "แก้ไขล่าสุด", "จัดการ"]
-                for i, head in enumerate(headers):
-                    h[i].markdown(f"**{head}**")
-
+                # --- ตารางแนวนอนแบบ Custom Columns ---
+                cols = st.columns([0.5, 1, 1.5, 1, 0.8, 1, 1, 1])
+                fields = ["ID", "วันที่", "ประเภท", "จำนวน", "บิล", "ผู้บันทึก", "ล่าสุด", "จัดการ"]
+                for col, field in zip(cols, fields):
+                    col.markdown(f"**{field}**")
+                
                 for _, row in df.sort_values('id', ascending=False).iterrows():
-                    row_id = row['id']
-                    c = st.columns(cols_width)
-                    c[0].write(f"#{row_id}")
+                    r_id = row['id']
+                    c = st.columns([0.5, 1, 1.5, 1, 0.8, 1, 1, 1])
+                    c[0].write(f"#{r_id}")
                     c[1].write(row['date'])
-                    c[2].write(f"{row['type']} ({row['category']})")
-                    
-                    # สีตามประเภทเงิน
-                    amt_color = "green" if row['type'] == "รายรับ" else "red"
-                    c[3].markdown(f":{amt_color}[฿{row['amount']:,.2f}]")
-                    
-                    # ตรวจสอบบิลป้องกัน TypeError จาก image_0c4ff8.png
-                    path = row['bill_path']
-                    has_bill = False
-                    if path and isinstance(path, str) and os.path.exists(path):
-                        has_bill = True
+                    c[2].write(f"{row['type']}({row['category']})")
+                    c[3].write(f"฿{row['amount']:,.2f}")
 
-                    if has_bill:
-                        if st.session_state.view_bill_id == row_id:
-                            if c[4].button("❌ ปิด", key=f"hide_{row_id}"):
-                                st.session_state.view_bill_id = None
-                                st.rerun()
-                        else:
-                            if c[4].button("🖼️ ดู", key=f"show_{row_id}"):
-                                st.session_state.view_bill_id = row_id
-                                st.rerun()
-                    else:
-                        c[4].write("-")
+                    # จัดการบิล (แก้ไข TypeError จาก image_0c4ff8.png)
+                    path = row['bill_path']
+                    if path and isinstance(path, str) and os.path.exists(path):
+                        btn_txt = "❌ หุบ" if st.session_state.view_bill_id == r_id else "🖼️ ดู"
+                        if c[4].button(btn_txt, key=f"v_{r_id}"):
+                            st.session_state.view_bill_id = r_id if st.session_state.view_bill_id != r_id else None
+                            st.rerun()
+                    else: c[4].write("-")
 
                     c[5].caption(row['created_by'])
-                    u_color = "blue" if row['updated_by'] == st.session_state.username else "gray"
-                    c[6].markdown(f":{u_color}[{row['updated_by']}]")
+                    c[6].caption(row['updated_by'])
                     
-                    e_btn, d_btn = c[7].columns(2)
-                    if e_btn.button("📝", key=f"e_{row_id}"):
-                        st.session_state.editing_id = row_id
+                    if c[7].button("📝", key=f"e_{r_id}"):
+                        st.session_state.editing_id = r_id
                         st.rerun()
-                    if d_btn.button("🗑️", key=f"d_{row_id}"):
-                        delete_transaction(row_id)
+                    if c[7].button("🗑️", key=f"d_{r_id}"):
+                        delete_transaction(r_id)
                         st.rerun()
-                    
-                    # แสดงรูปบิลพร้อมปุ่มหุบ
-                    if st.session_state.view_bill_id == row_id and has_bill:
-                        st.image(path, caption=f"บิลรายการ #{row_id}", width=500)
-                    
+
+                    if st.session_state.view_bill_id == r_id:
+                        st.image(path, width=400)
                     st.divider()
             else:
-                st.info("ยังไม่มีข้อมูลบันทึกในระบบ")
+                st.info("ไม่มีข้อมูล")
 
 if __name__ == '__main__':
     main()
