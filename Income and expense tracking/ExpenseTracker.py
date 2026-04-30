@@ -1,185 +1,164 @@
-import streamlit as st
-import pandas as pd
-import sqlite3
-import os
-import hashlib
-from datetime import datetime
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expense Tracker Web App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
 
-# --- Configuration & Database ---
-DB_FILE = 'expense_tracker.db'
-BILL_DIR = "bills"
+    <div class="max-w-4xl mx-auto p-5">
+        <header class="text-center mb-10">
+            <h1 class="text-3xl font-bold text-gray-800">💰 บันทึกรายรับ-รายจ่าย</h1>
+            <p class="text-gray-500">เวอร์ชัน Web Browser (Local Storage)</p>
+        </header>
 
-if not os.path.exists(BILL_DIR):
-    os.makedirs(BILL_DIR)
+        <!-- ส่วนสรุปยอด -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div class="bg-green-100 p-5 rounded-lg border-l-4 border-green-500">
+                <p class="text-sm text-green-600 uppercase">รายรับทั้งหมด</p>
+                <p id="total-income" class="text-2xl font-bold">฿0.00</p>
+            </div>
+            <div class="bg-red-100 p-5 rounded-lg border-l-4 border-red-500">
+                <p class="text-sm text-red-600 uppercase">รายจ่ายทั้งหมด</p>
+                <p id="total-expense" class="text-2xl font-bold">฿0.00</p>
+            </div>
+            <div class="bg-blue-100 p-5 rounded-lg border-l-4 border-blue-500">
+                <p class="text-sm text-blue-600 uppercase">ยอดคงเหลือ</p>
+                <p id="total-balance" class="text-2xl font-bold">฿0.00</p>
+            </div>
+        </div>
 
-def make_hashes(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- ฟอร์มกรอกข้อมูล -->
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <h2 class="text-xl font-semibold mb-4">📝 เพิ่มรายการ</h2>
+                <form id="transaction-form">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium">วันที่</label>
+                        <input type="date" id="date" class="w-full border p-2 rounded mt-1" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium">ประเภท</label>
+                        <select id="type" class="w-full border p-2 rounded mt-1">
+                            <option value="income">รายรับ</option>
+                            <option value="expense">รายจ่าย</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium">หมวดหมู่</label>
+                        <input type="text" id="category" placeholder="เช่น อาหาร, เงินเดือน" class="w-full border p-2 rounded mt-1" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium">จำนวนเงิน</label>
+                        <input type="number" id="amount" step="0.01" class="w-full border p-2 rounded mt-1" required>
+                    </div>
+                    <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">บันทึกรายการ</button>
+                </form>
+            </div>
 
-def check_hashes(password, hashed_text):
-    if make_hashes(password) == hashed_text:
-        return hashed_text
-    return False
+            <!-- กราฟสรุป -->
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <h2 class="text-xl font-semibold mb-4">📊 สัดส่วนรายจ่าย</h2>
+                <canvas id="expenseChart"></canvas>
+            </div>
+        </div>
 
-def get_connection():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    return conn
+        <!-- ตารางแสดงรายการ -->
+        <div class="mt-10 bg-white p-6 rounded-lg shadow-md overflow-x-auto">
+            <h2 class="text-xl font-semibold mb-4">📜 ประวัติรายการ</h2>
+            <table class="w-full text-left">
+                <thead>
+                    <tr class="border-b">
+                        <th class="p-2">วันที่</th>
+                        <th class="p-2">หมวดหมู่</th>
+                        <th class="p-2">ประเภท</th>
+                        <th class="p-2 text-right">จำนวนเงิน</th>
+                    </tr>
+                </thead>
+                <tbody id="transaction-list">
+                    <!-- ข้อมูลจะถูกเติมด้วย JavaScript -->
+                </tbody>
+            </table>
+        </div>
+    </div>
 
-def create_tables():
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, password TEXT)')
-    c.execute('''CREATE TABLE IF NOT EXISTS transactions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  username TEXT, 
-                  date TEXT, 
-                  type TEXT, 
-                  category TEXT, 
-                  amount REAL, 
-                  bill_path TEXT)''')
-    conn.commit()
-    conn.close()
+    <script>
+        let transactions = JSON.parse(localStorage.getItem('transactions')) || [];
 
-create_tables()
+        const form = document.getElementById('transaction-form');
+        const list = document.getElementById('transaction-list');
+        const incomeEl = document.getElementById('total-income');
+        const expenseEl = document.getElementById('total-expense');
+        const balanceEl = document.getElementById('total-balance');
 
-# --- Functions ---
-def save_bill(uploaded_file, username):
-    if uploaded_file is not None:
-        file_ext = uploaded_file.name.split('.')[-1]
-        filename = f"{username}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_ext}"
-        file_path = os.path.join(BILL_DIR, filename)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        return file_path
-    return None
+        function updateUI() {
+            list.innerHTML = '';
+            let income = 0;
+            let expense = 0;
 
-# --- UI Setup ---
-st.set_page_config(page_title="Expense Tracker", page_icon="💰", layout="wide")
+            transactions.forEach((t, index) => {
+                const row = document.createElement('tr');
+                row.className = "border-b text-sm";
+                row.innerHTML = `
+                    <td class="p-2">${t.date}</td>
+                    <td class="p-2">${t.category}</td>
+                    <td class="p-2 ${t.type === 'income' ? 'text-green-600' : 'text-red-600'}">${t.type === 'income' ? 'รายรับ' : 'รายจ่าย'}</td>
+                    <td class="p-2 text-right">${parseFloat(t.amount).toLocaleString()}</td>
+                `;
+                list.appendChild(row);
 
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+                if (t.type === 'income') income += parseFloat(t.amount);
+                else expense += parseFloat(t.amount);
+            });
 
-# --- Authentication Logic ---
-def main():
-    if not st.session_state.logged_in:
-        st.title("🔒 Access Control")
-        auth_mode = st.tabs(["Login", "Register"])
-        
-        with auth_mode[0]:
-            user = st.text_input("Username", key="login_user")
-            pw = st.text_input("Password", type='password', key="login_pw")
-            if st.button("Login"):
-                conn = get_connection()
-                c = conn.cursor()
-                c.execute('SELECT password FROM users WHERE username = ?', (user,))
-                result = c.fetchone()
-                conn.close()
-                if result and check_hashes(pw, result[0]):
-                    st.session_state.logged_in = True
-                    st.session_state.username = user
-                    st.success(f"Welcome back, {user}!")
-                    st.rerun()
-                else:
-                    st.error("Invalid Username or Password")
+            incomeEl.innerText = `฿${income.toLocaleString()}`;
+            expenseEl.innerText = `฿${expense.toLocaleString()}`;
+            balanceEl.innerText = `฿${(income - expense).toLocaleString()}`;
+            
+            updateChart();
+            localStorage.setItem('transactions', JSON.stringify(transactions));
+        }
 
-        with auth_mode[1]:
-            new_user = st.text_input("New Username")
-            new_pw = st.text_input("New Password", type='password')
-            if st.button("Create Account"):
-                if new_user and new_pw:
-                    conn = get_connection()
-                    c = conn.cursor()
-                    try:
-                        c.execute('INSERT INTO users(username, password) VALUES (?,?)', 
-                                  (new_user, make_hashes(new_pw)))
-                        conn.commit()
-                        st.success("Registration successful! Please login.")
-                    except sqlite3.IntegrityError:
-                        st.error("Username already exists.")
-                    finally:
-                        conn.close()
-                else:
-                    st.warning("Please fill in all fields.")
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const newTransaction = {
+                date: document.getElementById('date').value,
+                type: document.getElementById('type').value,
+                category: document.getElementById('category').value,
+                amount: document.getElementById('amount').value
+            };
+            transactions.push(newTransaction);
+            form.reset();
+            updateUI();
+        });
 
-    else:
-        # --- App Interface (Logged In) ---
-        st.sidebar.title(f"👤 {st.session_state.username}")
-        if st.sidebar.button("Logout"):
-            st.session_state.logged_in = False
-            st.rerun()
+        // ระบบกราฟ (Chart.js)
+        let myChart;
+        function updateChart() {
+            const ctx = document.getElementById('expenseChart').getContext('2d');
+            const expensesOnly = transactions.filter(t => t.type === 'expense');
+            const categories = [...new Set(expensesOnly.map(t => t.category))];
+            const data = categories.map(cat => {
+                return expensesOnly.filter(t => t.category === cat).reduce((sum, t) => sum + parseFloat(t.amount), 0);
+            });
 
-        menu = st.sidebar.radio("Navigation", ["Dashboard", "Add Transaction"])
+            if (myChart) myChart.destroy();
+            myChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: categories,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF']
+                    }]
+                }
+            });
+        }
 
-        if menu == "Add Transaction":
-            st.header("📝 New Record")
-            with st.form("transaction_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    t_date = st.date_input("Date", datetime.now())
-                    t_type = st.selectbox("Type", ["Income", "Expense"])
-                with col2:
-                    t_cat = st.selectbox("Category", ["Food", "Transport", "Bills", "Salary", "Shopping", "Others"])
-                    t_amount = st.number_input("Amount", min_value=0.0, step=0.5)
-                
-                t_bill = st.file_uploader("Upload Receipt (Optional)", type=['jpg', 'png', 'jpeg'])
-                
-                if st.form_submit_button("Save Record"):
-                    bill_path = save_bill(t_bill, st.session_state.username)
-                    conn = get_connection()
-                    c = conn.cursor()
-                    c.execute('''INSERT INTO transactions(username, date, type, category, amount, bill_path) 
-                                 VALUES (?,?,?,?,?,?)''', 
-                              (st.session_state.username, t_date.strftime("%Y-%m-%d"), t_type, t_cat, t_amount, bill_path))
-                    conn.commit()
-                    conn.close()
-                    st.success("Saved successfully!")
-
-        elif menu == "Dashboard":
-            st.header("📊 Financial Summary")
-            conn = get_connection()
-            query = 'SELECT * FROM transactions WHERE username = ?'
-            df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
-            conn.close()
-
-            if not df.empty:
-                # Top-level metrics
-                income = df[df['type'] == 'Income']['amount'].sum()
-                expense = df[df['type'] == 'Expense']['amount'].sum()
-                balance = income - expense
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Income", f"{income:,.2f}")
-                m2.metric("Total Expense", f"{expense:,.2f}")
-                m3.metric("Balance", f"{balance:,.2f}")
-
-                # Charts
-                st.divider()
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    st.subheader("Transaction History")
-                    st.dataframe(df[['date', 'type', 'category', 'amount']].sort_values('date', ascending=False), use_container_width=True)
-                
-                with c2:
-                    st.subheader("Expense by Category")
-                    expense_df = df[df['type'] == 'Expense']
-                    if not expense_df.empty:
-                        pie_data = expense_df.groupby('category')['amount'].sum()
-                        st.pie_chart(pie_data)
-                    else:
-                        st.info("No expense data for chart")
-
-                # Receipt viewer
-                st.divider()
-                st.subheader("🔍 View Receipt")
-                receipt_list = df[df['bill_path'].notnull()]
-                if not receipt_list.empty:
-                    selected_id = st.selectbox("Select Transaction ID", receipt_list['id'])
-                    path = receipt_list[receipt_list['id'] == selected_id]['bill_path'].values[0]
-                    if os.path.exists(path):
-                        st.image(path, width=400)
-                else:
-                    st.info("No receipts uploaded yet.")
-            else:
-                st.info("No data available yet. Start by adding a transaction!")
-
-if __name__ == '__main__':
-    main()
+        updateUI(); // รันครั้งแรกเมื่อโหลดหน้าเว็บ
+    </script>
+</body>
+</html>
