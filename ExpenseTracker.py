@@ -64,12 +64,20 @@ def get_status_icon(last_active_str):
     except: pass
     return "⚪ ออฟไลน์"
 
-def send_notification(receiver, msg):
-    conn = get_connection()
+def send_notification(receiver, msg, conn=None):
+    # ถ้ามีการส่ง Connection มาจากฟังก์ชันแม่ ให้ใช้ตัวนั้นเลย ไม่ต้องเปิดใหม่
+    local_conn = conn if conn else get_connection()
     now = datetime.now().strftime("%H:%M")
-    conn.cursor().execute('INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', (receiver, msg, now))
-    conn.commit()
-    conn.close()
+    
+    local_conn.cursor().execute(
+        'INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', 
+        (receiver, msg, now)
+    )
+    
+    # ถ้าสร้าง Connection เองในนี้ ค่อยทำ Commit และ Close
+    if not conn:
+        local_conn.commit()
+        local_conn.close()
 
 # --- 3. UI หน้า Login / Register ---
 st.set_page_config(page_title="Trip Expense Master", layout="wide")
@@ -177,9 +185,11 @@ else:
                                     f.write(uploaded_file.getbuffer())
                                 cur.execute('UPDATE transactions SET bill_path=? WHERE id=?', (bill_path, tx_id))
                             
-                            m_list = cur.execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
-                            for m in m_list:
-                                send_notification(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}")
+# แก้ไขใน Tab 1 ตรงลูปส่งแจ้งเตือนเพื่อน
+m_list = cur.execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
+for m in m_list:
+    # เพิ่ม conn=conn เข้าไปท้ายฟังก์ชันแบบนี้
+    send_notification(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}", conn=conn)
                             
                             conn.commit()
                             conn.close()
@@ -308,7 +318,7 @@ else:
                             if os.path.exists(path_to_img):
                                 st.image(path_to_img, caption=selected_bill, width=400)
 
-            with tab3:
+with tab3:
                 st.subheader("👥 สมาชิกและสถานะ")
                 conn = get_connection()
                 members = pd.read_sql_query('''
@@ -320,19 +330,28 @@ else:
                     status = get_status_icon(m_row['last_active'])
                     c1, c2 = st.columns([4, 1])
                     c1.write(f"{status} **{m_row['username']}** {'(ผู้สร้างทริป)' if m_row['username'] == t_row['created_by'] else ''}")
+                    
                     if is_creator and m_row['username'] != user_now:
                         if c2.button("ลบออก", key=f"kick_{m_row['username']}"):
-                            conn.cursor().execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m_row['username']))
-                            send_notification(m_row['username'], f"❌ คุณถูกลบออกจากทริป {sel_trip}")
-                            conn.commit(); conn.close(); st.rerun()
+                            cur = conn.cursor()
+                            # 1. ลบสมาชิกออกจากทริป
+                            cur.execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m_row['username']))
+                            # 2. ส่งแจ้งเตือนโดยใช้ conn ตัวเดียวกัน (ส่งเป็นก้อนเดียวกันป้องกัน DB Locked)
+                            send_notification(m_row['username'], f"❌ คุณถูกลบออกจากทริป {sel_trip}", conn=conn)
+                            
+                            conn.commit()
+                            conn.close()
+                            st.success("ลบรายการสำเร็จ!")
+                            st.rerun()
                 
                 if is_creator:
                     st.divider()
                     st.subheader("✉️ เชิญเพื่อนเข้าทริป")
                     search_user = st.text_input("พิมพ์ชื่อผู้ใช้ที่ต้องการเชิญ")
                     if search_user:
-                        user_exists = conn.cursor().execute('SELECT COUNT(*) FROM users WHERE username=?', (search_user,)).fetchone()[0]
-                        is_already_member = conn.cursor().execute('SELECT COUNT(*) FROM trip_members WHERE trip_id=? AND username=?', (t_id, search_user)).fetchone()[0]
+                        cur = conn.cursor()
+                        user_exists = cur.execute('SELECT COUNT(*) FROM users WHERE username=?', (search_user,)).fetchone()[0]
+                        is_already_member = cur.execute('SELECT COUNT(*) FROM trip_members WHERE trip_id=? AND username=?', (t_id, search_user)).fetchone()[0]
                         
                         if user_exists == 0:
                             st.warning("⚠️ ไม่พบชื่อผู้ใช้งานนี้ในระบบ")
@@ -340,11 +359,18 @@ else:
                             st.info("ℹ️ ผู้ใช้งานนี้อยู่ในทริปนี้แล้ว")
                         else:
                             if st.button(f"ส่งคำเชิญให้ {search_user}"):
-                                conn.cursor().execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, search_user))
+                                cur.execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, search_user))
+                                # ส่งแจ้งเตือนพ่วงไปด้วยเลย
+                                send_notification(search_user, f"✉️ {user_now} เชิญคุณเข้าร่วมทริป '{sel_trip}'", conn=conn)
                                 conn.commit()
-                                send_notification(search_user, f"✉️ {user_now} เชิญคุณเข้าร่วมทริป '{sel_trip}'")
+                                conn.close()
                                 st.success(f"เพิ่ม {search_user} เข้าทริปสำเร็จ!"); st.rerun()
-                conn.close()
+                
+                # หากไม่มีการกดปุ่มใดๆ ให้ทำการปิด Connection ตามปกติหลังจบแท็บ
+                try:
+                    conn.close()
+                except:
+                    pass
 
     elif menu == "➕ สร้างทริปใหม่":
         st.header("➕ สร้างทริปใหม่")
