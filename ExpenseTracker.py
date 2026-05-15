@@ -30,14 +30,16 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS notifications 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)''')
         
-        # Migration: ตรวจสอบคอลัมน์และสร้างคอลัมน์ใหม่สำหรับสถานะเชิญเพื่อน
+        # [CRITICAL FIX] บังคับตรวจสอบและอัปเดตคอลัมน์ status สำหรับตารางเดิม
         try:
             c.execute('SELECT status FROM trip_members LIMIT 1')
         except sqlite3.OperationalError:
-            c.execute('ALTER TABLE trip_members ADD COLUMN status TEXT DEFAULT "accepted"')
+            try:
+                c.execute('ALTER TABLE trip_members ADD COLUMN status TEXT DEFAULT "accepted"')
+                conn.commit()
+            except:
+                pass
             
-        conn.commit()
-
 init_db()
 
 # --- 2. ฟังก์ชันเสริม ---
@@ -68,7 +70,6 @@ def send_notification(receiver, msg, conn=None):
         local_conn.commit()
         local_conn.close()
 
-# ฟังก์ชันแสดงป๊อปอัป Toast แจ้งเตือนแบบเรียลไทม์
 def check_and_show_popups(username):
     with get_connection() as conn:
         unread_notis = conn.cursor().execute(
@@ -77,8 +78,7 @@ def check_and_show_popups(username):
         
         if unread_notis:
             for noti_id, msg in unread_notis:
-                st.toast(msg, icon="🔔") # แสดงป๊อปอัปมุมขวาล่าง
-                # อัปเดตสถานะเป็นอ่านแล้วทันทีเพื่อไม่ให้เด้งซ้ำซ้อน
+                st.toast(msg, icon="🔔")
                 conn.cursor().execute('UPDATE notifications SET is_read=1 WHERE id=?', (noti_id,))
             conn.commit()
 
@@ -121,18 +121,14 @@ if not st.session_state.username:
 else:
     user_now = st.session_state.username
     update_online_status(user_now)
-    
-    # ดักเช็กแจ้งเตือนใหม่เพื่อยิงป๊อปอัป Toast
     check_and_show_popups(user_now)
     
     with get_connection() as conn:
-        # ดึงทริปที่ตอบรับแล้ว (accepted)
         my_trips = pd.read_sql_query('''
             SELECT * FROM trips 
             WHERE id IN (SELECT trip_id FROM trip_members WHERE username = ? AND status = 'accepted')
         ''', conn, params=(user_now,))
         
-        # ดึงทริปที่อยู่ระหว่างรอการตอบรับ (pending)
         pending_trips = pd.read_sql_query('''
             SELECT t.*, tm.id as member_row_id FROM trips t
             JOIN trip_members tm ON t.id = tm.trip_id
@@ -144,7 +140,6 @@ else:
     # Sidebar
     st.sidebar.title(f"👤 {user_now}")
     
-    # ยอดนับการแจ้งเตือน (นับรวมทริปที่รอกดรับด้วย)
     total_alerts = len(notis[notis['is_read'] == 0]) + len(pending_trips)
     noti_text = f"🔔 แจ้งเตือน ({total_alerts})" if total_alerts > 0 else "🔔 แจ้งเตือน"
     
@@ -159,39 +154,41 @@ else:
     if "🔔" in menu:
         st.header("🔔 การแจ้งเตือนและคำเชิญทริป")
         
-        # ส่วนแสดงคำเชิญเข้าทริปที่ต้องกดรับ
         if not pending_trips.empty:
             st.subheader("✉️ คำเชิญเข้าร่วมทริปใหม่")
             for _, p_trip in pending_trips.iterrows():
+                # [FIXED KEY] ใช้ p_trip['member_row_id'] มาเป็น Key เพื่อให้ปุ่มมีตัวตนเฉพาะตัว ไม่ซ้ำกันในระบบ
+                row_id = p_trip['member_row_id']
+                
                 with st.container(border=True):
                     c_text, c_accept, c_reject = st.columns([6, 1.5, 1.5])
                     c_text.markdown(f"**{p_trip['created_by']}** ได้เชิญคุณเข้าร่วมทริป **'{p_trip['name']}'** (งบประมาณ: ฿{p_trip['budget']:,.2f})")
                     
-                    if c_accept.button("✅ ตอบรับคำเชิญ", key=f"acc_{p_trip['id']}", use_container_width=True):
+                    if c_accept.button("✅ ตอบรับคำเชิญ", key=f"btn_accept_{row_id}", use_container_width=True):
                         with get_connection() as conn:
-                            conn.cursor().execute('UPDATE trip_members SET status="accepted" WHERE id=?', (p_trip['member_row_id'],))
+                            conn.cursor().execute('UPDATE trip_members SET status="accepted" WHERE id=?', (row_id,))
                             send_notification(p_trip['created_by'], f"🤝 {user_now} ได้ตอบรับเข้าร่วมทริป '{p_trip['name']}' แล้ว!", conn=conn)
                             conn.commit()
+                        st.session_state.current_trip_name = p_trip['name'] # เปลี่ยนหน้าไปทริปนี้ให้ทันที
                         st.success(f"เข้าร่วมทริป {p_trip['name']} สำเร็จ!")
                         st.rerun()
                         
-                    if c_reject.button("❌ ปฏิเสธ", key=f"rej_{p_trip['id']}", use_container_width=True):
+                    if c_reject.button("❌ ปฏิเสธ", key=f"btn_reject_{row_id}", use_container_width=True):
                         with get_connection() as conn:
-                            conn.cursor().execute('DELETE FROM trip_members WHERE id=?', (p_trip['member_row_id'],))
+                            conn.cursor().execute('DELETE FROM trip_members WHERE id=?', (row_id,))
                             send_notification(p_trip['created_by'], f"👎 {user_now} ปฏิเสธการเข้าร่วมทริป '{p_trip['name']}'", conn=conn)
                             conn.commit()
                         st.info("ปฏิเสธคำเชิญเรียบร้อยแล้ว")
                         st.rerun()
             st.divider()
 
-        # ส่วนประวัติการแจ้งเตือนทั่วไป
         st.subheader("💬 ประวัติการแจ้งเตือนล่าสุด")
         if notis.empty and pending_trips.empty: 
             st.info("ไม่มีข้อความ")
         else:
             for _, n in notis.iterrows():
                 st.markdown(f"**[{n['created_at']}]** {n['message']}")
-            if st.button("อ่านทั้งหมด"):
+            if st.button("อ่านทั้งหมด", key="clear_all_notis"):
                 with get_connection() as conn:
                     conn.cursor().execute('UPDATE notifications SET is_read=1 WHERE receiver=?', (user_now,))
                     conn.commit()
@@ -225,7 +222,6 @@ else:
 
                     tab1, tab2, tab3 = st.tabs(["📝 รายจ่าย", "📊 สรุปและวิเคราะห์", "👥 สมาชิก"])
 
-                    # แท็บ 1: บันทึกข้อมูล
                     with tab1:
                         st.subheader("บันทึกรายรับ-รายจ่าย")
                         with st.form("exp_form", clear_on_submit=True):
@@ -260,7 +256,6 @@ else:
                                     st.success("บันทึกรายจ่ายสำเร็จ!")
                                     st.rerun()
 
-                    # แท็บ 2: สรุป วิเคราะห์ และแก้ไขรายการ
                     with tab2:
                         with get_connection() as conn:
                             df = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id=?', conn, params=(t_id,))
@@ -284,7 +279,6 @@ else:
                             
                             st.divider()
                             
-                            # (ฟอร์มแก้ไขข้อมูล/โค้ดกราฟ/ธุรกรรม ทำงานตามปกติเหมือนเดิม...)
                             if st.session_state.editing_tx_id is not None:
                                 with get_connection() as conn:
                                     tx_data = conn.cursor().execute('SELECT * FROM transactions WHERE id=?', (st.session_state.editing_tx_id,)).fetchone()
@@ -320,7 +314,6 @@ else:
                                         conn.commit()
                                     st.rerun()
 
-                    # แท็บ 3: รายชื่อสมาชิกกลุ่มและสถานะการกดรับเชิญ
                     with tab3:
                         st.subheader("👥 สมาชิกและสถานะการตอบรับ")
                         with get_connection() as conn:
@@ -348,7 +341,7 @@ else:
                         if is_creator:
                             st.divider()
                             st.subheader("✉️ เชิญเพื่อนเข้าทริป")
-                            search_user = st.text_input("พิมพ์ชื่อผู้ใช้ที่ต้องการเชิญ")
+                            search_user = st.text_input("พิมพ์ชื่อผู้ใช้ที่ต้องการเชิญ", key="invite_user_input")
                             if search_user:
                                 with get_connection() as conn:
                                     cur = conn.cursor()
@@ -360,12 +353,12 @@ else:
                                     elif is_already_member > 0:
                                         st.info("ℹ️ ผู้ใช้งานนี้อยู่ในทริปนี้แล้ว (หรือกำลังรอการตอบรับอยู่)")
                                     else:
-                                        # บันทึกสถานะเริ่มต้นเป็น 'pending' เสมอเพื่อให้ผู้รับกดยืนยันก่อน
-                                        if st.button(f"ส่งคำเชิญให้ {search_user}"):
+                                        if st.button(f"ส่งคำเชิญให้ {search_user}", key="btn_send_invite"):
                                             cur.execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,"pending")', (t_id, search_user))
                                             send_notification(search_user, f"✉️ {user_now} เชิญคุณเข้าร่วมทริป '{sel_trip}' (กรุณากดตอบรับเพื่อเริ่มใช้งาน)", conn=conn)
                                             conn.commit()
-                                            st.success(f"ส่งคำเชิญให้ {search_user} เรียบร้อยแล้ว ตัวแอพจะขึ้นป๊อปอัปฝั่งเพื่อนทันที!"); st.rerun()
+                                            st.success(f"ส่งคำเชิญให้ {search_user} เรียบร้อยแล้ว ตัวแอพจะขึ้นป๊อปอัปฝั่งเพื่อนทันที!")
+                                            st.rerun()
 
     elif menu == "➕ สร้างทริปใหม่":
         st.header("➕ สร้างทริปใหม่")
@@ -378,7 +371,6 @@ else:
                         cur = conn.cursor()
                         cur.execute('INSERT INTO trips(name, budget, created_by, created_at) VALUES (?,?,?,?)', (name, bud, user_now, datetime.now().strftime("%Y-%m-%d")))
                         new_id = cur.lastrowid
-                        # สำหรับคนสร้างทริปเอง ให้เซ็ตสถานะเป็น accepted ทันที
                         cur.execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,"accepted")', (new_id, user_now))
                         conn.commit()
                     st.success("สร้างทริปสำเร็จ!")
