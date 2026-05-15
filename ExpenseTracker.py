@@ -18,11 +18,28 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    # ตาราง User
     cursor.execute('CREATE TABLE IF NOT EXISTS all_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS trips (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, status INTEGER DEFAULT 0)')
-    try: cursor.execute('ALTER TABLE trips ADD COLUMN status INTEGER DEFAULT 0')
-    except: pass
+    
+    # ตาราง Trips
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT UNIQUE NOT NULL, 
+            status INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # ตรวจสอบและอัปเดต Schema สำหรับกรณีมีไฟล์เดิมอยู่แล้ว
+    try:
+        cursor.execute('ALTER TABLE trips ADD COLUMN status INTEGER DEFAULT 0')
+    except:
+        pass
+
+    # ตารางสมาชิก
     cursor.execute('CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, name TEXT, FOREIGN KEY(trip_id) REFERENCES trips(id))')
+    
+    # ตารางค่าใช้จ่าย
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, description TEXT, 
@@ -30,6 +47,8 @@ def init_db():
             FOREIGN KEY(trip_id) REFERENCES trips(id)
         )
     ''')
+    
+    # ตารางบันทึกการเคลียร์เงิน
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settlements (
             id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, 
@@ -40,13 +59,16 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ฟังก์ชันบีบอัดรูปภาพ
 def compress_image(uploaded_file):
-    if uploaded_file is None: return None
+    if uploaded_file is None:
+        return None
     img = Image.open(uploaded_file)
-    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
-    img.thumbnail((800, 800))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    img.thumbnail((800, 800))  # จำกัดความกว้าง/สูงไม่เกิน 800px
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=70)
+    img.save(buffer, format="JPEG", quality=70) # บีบอัดคุณภาพ 70%
     return buffer.getvalue()
 
 init_db()
@@ -54,7 +76,8 @@ init_db()
 # --- 3. Sidebar: ศูนย์ควบคุม ---
 st.sidebar.header("⚙️ ระบบจัดการข้อมูล")
 
-with st.sidebar.expander("👤 ลงทะเบียน User"):
+# 3.1 ลงทะเบียน User
+with st.sidebar.expander("👤 ลงทะเบียน User (ทำครั้งเดียว)"):
     reg_name = st.text_input("ระบุชื่อผู้ใช้งาน:").strip()
     if st.button("ลงทะเบียน"):
         if reg_name:
@@ -63,9 +86,14 @@ with st.sidebar.expander("👤 ลงทะเบียน User"):
                 conn.execute("INSERT INTO all_users (name) VALUES (?)", (reg_name,))
                 conn.commit()
                 conn.close()
+                st.toast(f"ลงทะเบียนคุณ {reg_name} สำเร็จ!", icon='✅')
                 st.rerun()
-            except: st.sidebar.error("ชื่อนี้มีในระบบแล้ว")
+            except sqlite3.IntegrityError:
+                st.sidebar.error("ชื่อนี้มีในระบบแล้ว")
+        else:
+            st.sidebar.warning("กรุณากรอกชื่อ")
 
+# 3.2 สร้างทริปใหม่
 st.sidebar.markdown("---")
 new_trip_name = st.sidebar.text_input("➕ สร้างทริปใหม่:").strip()
 if st.sidebar.button("บันทึกทริป"):
@@ -75,67 +103,89 @@ if st.sidebar.button("บันทึกทริป"):
             conn.execute("INSERT INTO trips (name, status) VALUES (?, 0)", (new_trip_name,))
             conn.commit()
             conn.close()
+            st.toast(f"สร้างทริป {new_trip_name} เรียบร้อย!", icon='🗺️')
             st.rerun()
-        except: st.sidebar.error("ชื่อทริปซ้ำ")
+        except: 
+            st.sidebar.error("ชื่อทริปซ้ำ")
 
+# 3.3 เลือกทริป และ ถังขยะ
 conn = get_db_connection()
 active_trips_df = pd.read_sql_query("SELECT * FROM trips WHERE status = 0", conn)
 active_trip_list = active_trips_df["name"].tolist() if not active_trips_df.empty else []
 
+# เมนูถังขยะ
+with st.sidebar.expander("🗑️ ถังขยะ (ทริปที่ถูกลบ)"):
+    deleted_trips = conn.execute("SELECT * FROM trips WHERE status = 1").fetchall()
+    if not deleted_trips:
+        st.caption("ไม่มีรายการในถังขยะ")
+    else:
+        for dt in deleted_trips:
+            c_name, c_act = st.columns([2, 1])
+            c_name.write(dt['name'])
+            sub_col1, sub_col2 = c_act.columns(2)
+            if sub_col1.button("🔄", key=f"res_{dt['id']}", help="กู้คืน"):
+                conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
+                conn.commit()
+                st.rerun()
+            if sub_col2.button("❌", key=f"pdel_{dt['id']}", help="ลบถาวร"):
+                conn.execute("DELETE FROM settlements WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM expenses WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM members WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM trips WHERE id = ?", (dt['id'],))
+                conn.commit()
+                st.rerun()
+
 if not active_trip_list:
     st.title("✈️ ระบบจัดการทริป")
-    st.info("กรุณาสร้างทริปใหม่ที่เมนูซ้ายมือ")
+    st.info("กรุณาสร้างทริปใหม่ หรือกู้คืนทริปจากถังขยะที่เมนูซ้ายมือ")
+    conn.close()
     st.stop()
 
 st.sidebar.markdown("---")
-current_trip = st.sidebar.selectbox("🗺️ เลือกทริป:", active_trip_list)
+current_trip = st.sidebar.selectbox("🗺️ เลือกทริปที่ต้องการจัดการ:", active_trip_list)
 trip_id = conn.execute("SELECT id FROM trips WHERE name = ? AND status = 0", (current_trip,)).fetchone()["id"]
 
+# ปุ่มย้ายลงถังขยะ
+if st.sidebar.button("🗑️ ย้ายทริปนี้ไปถังขยะ", type="secondary"):
+    conn.execute("UPDATE trips SET status = 1 WHERE id = ?", (trip_id,))
+    conn.commit()
+    st.toast(f"ย้าย {current_trip} ลงถังขยะแล้ว")
+    st.rerun()
+
+# 3.4 สมาชิกในทริป
+st.sidebar.markdown("---")
 st.sidebar.subheader(f"👥 สมาชิกใน {current_trip}")
 all_users = [row["name"] for row in conn.execute("SELECT name FROM all_users").fetchall()]
 existing_members = [row["name"] for row in conn.execute("SELECT name FROM members WHERE trip_id = ?", (trip_id,)).fetchall()]
 available_users = [u for u in all_users if u not in existing_members]
 
-selected_u = st.sidebar.selectbox("ดึงเพื่อนเข้าทริป:", ["-- เลือก --"] + available_users)
-if st.sidebar.button("เพิ่มเข้าทริป"):
+selected_u = st.sidebar.selectbox("เลือกรายชื่อเพื่อดึงเข้าทริป:", ["-- เลือก --"] + available_users)
+if st.sidebar.button("ดึงเพื่อนเข้าทริป"):
     if selected_u != "-- เลือก --":
         conn.execute("INSERT INTO members (trip_id, name) VALUES (?, ?)", (trip_id, selected_u))
         conn.commit()
         st.rerun()
 conn.close()
 
+# --- 4. ส่วนแสดงผลหลัก ---
 if not existing_members:
     st.title(f"📍 ทริป: {current_trip}")
-    st.warning("⚠️ กรุณาเลือกสมาชิกเข้าทริปก่อน")
+    st.warning("⚠️ กรุณาเลือกสมาชิกเข้าทริปก่อนเริ่มบันทึกบิล")
     st.stop()
 
-# --- 4. ส่วนแสดงผลหลัก ---
 st.title(f"📍 ทริป: {current_trip}")
 tab1, tab2, tab3 = st.tabs(["📝 บันทึกบิล", "📊 ประวัติและแก้ไข", "💰 สรุปเคลียร์เงิน"])
 
-# --- TAB 1: บันทึกบิล (เพิ่มปุ่มถอดคนหาร) ---
+# --- TAB 1: บันทึกบิล ---
 with tab1:
-    st.header("➕ เพิ่มบิลค่าใช้จ่าย")
-    
-    # ส่วนของปุ่มเลือก/ถอดทั้งหมด
-    col_btn1, col_btn2, _ = st.columns([1, 1, 3])
-    if col_btn1.button("✅ เลือกทุกคน", use_container_width=True):
-        for m in existing_members: st.session_state[f"cb_{m}"] = True
-    if col_btn2.button("⬜ ล้างทั้งหมด", use_container_width=True):
-        for m in existing_members: st.session_state[f"cb_{m}"] = False
-
-    with st.form("add_bill_form"):
+    with st.form("add_bill", clear_on_submit=True):
+        st.header("➕ เพิ่มบิลค่าใช้จ่าย")
         desc = st.text_input("รายการ:")
         amt = st.number_input("จำนวนเงิน (บาท):", min_value=0.0, step=50.0)
         payer = st.selectbox("ใครเป็นคนสำรองจ่าย?", existing_members)
         
         st.write("คนหาร:")
-        split_to = []
-        # ใช้ session_state ควบคุมค่าเริ่มต้นของ checkbox
-        for m in existing_members:
-            default_val = st.session_state.get(f"cb_{m}", True)
-            if st.checkbox(m, value=default_val, key=f"add_{m}"):
-                split_to.append(m)
+        split_to = [m for m in existing_members if st.checkbox(m, value=True, key=f"add_{m}")]
         
         file = st.file_uploader("สลิป:", type=['jpg','png','jpeg'])
         
@@ -147,12 +197,12 @@ with tab1:
                              (trip_id, desc, amt, payer, ",".join(split_to), blob))
                 conn.commit()
                 conn.close()
-                st.success("บันทึกสำเร็จ!")
+                st.toast("บันทึกสำเร็จ!", icon='✅')
                 st.rerun()
             else:
-                st.error("กรุณากรอกข้อมูลให้ครบและเลือกคนหารอย่างน้อย 1 คน")
+                st.error("กรุณากรอกข้อมูลให้ครบถ้วน และเลือกคนหารอย่างน้อย 1 คน")
 
-# --- TAB 2: ประวัติและแก้ไข ---
+# --- TAB 2: ประวัติและการแก้ไข (รวมฟังก์ชันแก้ไขคนหารและรูปสลิป) ---
 with tab2:
     conn = get_db_connection()
     expenses = conn.execute("SELECT * FROM expenses WHERE trip_id = ?", (trip_id,)).fetchall()
@@ -162,12 +212,16 @@ with tab2:
         st.info("ยังไม่มีข้อมูลบิล")
     else:
         for row in expenses:
-            current_split = row['split_members'].split(",") if row['split_members'] else []
+            # ดึงรายชื่อคนหารปัจจุบันออกมาเป็นลิสต์เพื่อใช้เป็นค่าเริ่มต้นในเช็กบ็อกซ์
+            current_split_members = row['split_members'].split(",") if row['split_members'] else []
+            
             with st.expander(f"📌 {row['description']} | {row['amount']:,.2f} บาท (โดย {row['payer_name']})"):
                 c_view, c_edit = st.columns([1, 1.2])
                 with c_view:
-                    if row['image_blob']: st.image(row['image_blob'], use_container_width=True)
-                    else: st.caption("ไม่มีรูปภาพ")
+                    if row['image_blob']:
+                        st.image(row['image_blob'], use_container_width=True)
+                    else: 
+                        st.caption("ไม่มีรูปภาพสลิป")
                 
                 with c_edit:
                     with st.form(f"edit_{row['id']}"):
@@ -175,67 +229,112 @@ with tab2:
                         u_amt = st.number_input("จำนวนเงิน:", value=row['amount'])
                         u_payer = st.selectbox("คนจ่าย:", existing_members, index=existing_members.index(row['payer_name']))
                         
+                        # ส่วนจัดการคนหารในฟอร์มแก้ไข (สามารถกดถอดออกหรือติ๊กเพิ่มได้)
                         st.write("คนหาร:")
-                        u_split_to = [m for m in existing_members if st.checkbox(m, value=(m in current_split), key=f"edit_mem_{row['id']}_{m}")]
+                        u_split_to = []
+                        for m in existing_members:
+                            is_checked = m in current_split_members
+                            if st.checkbox(m, value=is_checked, key=f"edit_mem_{row['id']}_{m}"):
+                                u_split_to.append(m)
+                        
                         u_file = st.file_uploader("อัปเดตรูปสลิป:", type=['jpg','png','jpeg'], key=f"edit_img_{row['id']}")
                         
-                        if st.form_submit_button("💾 อัปเดต"):
+                        submit_btn = st.form_submit_button("💾 อัปเดตการแก้ไข")
+                        
+                        if submit_btn:
                             if u_desc and u_amt > 0 and u_split_to:
                                 conn = get_db_connection()
-                                blob_sql = ", image_blob=?" if u_file else ""
-                                params = [u_desc, u_amt, u_payer, ",".join(u_split_to)]
-                                if u_file: params.append(compress_image(u_file))
-                                params.append(row['id'])
-                                conn.execute(f"UPDATE expenses SET description=?, amount=?, payer_name=?, split_members=?{blob_sql} WHERE id=?", params)
+                                if u_file:
+                                    new_blob = compress_image(u_file)
+                                    conn.execute("""
+                                        UPDATE expenses 
+                                        SET description=?, amount=?, payer_name=?, split_members=?, image_blob=? 
+                                        WHERE id=?
+                                    """, (u_desc, u_amt, u_payer, ",".join(u_split_to), new_blob, row['id']))
+                                else:
+                                    conn.execute("""
+                                        UPDATE expenses 
+                                        SET description=?, amount=?, payer_name=?, split_members=? 
+                                        WHERE id=?
+                                    """, (u_desc, u_amt, u_payer, ",".join(u_split_to), row['id']))
                                 conn.commit()
                                 conn.close()
+                                st.toast("อัปเดตเรียบร้อย!", icon='✅')
                                 st.rerun()
+                            else:
+                                st.error("กรุณากรอกข้อมูลให้ครบถ้วน และต้องมีคนหารอย่างน้อย 1 คน")
                     
-                    if st.button(f"🗑️ ลบรายการ", key=f"del_{row['id']}"):
+                    # ปุ่มลบรายการ (แยกออกจากฟอร์มเพื่อการทำงานที่ถูกต้องใน Streamlit)
+                    if st.button(f"🗑️ ลบบิลนี้", key=f"del_exp_{row['id']}", type="secondary"):
                         conn = get_db_connection()
                         conn.execute("DELETE FROM expenses WHERE id=?", (row['id'],))
                         conn.commit()
                         conn.close()
+                        st.toast("ลบบิลเรียบร้อยแล้ว")
                         st.rerun()
 
-# --- TAB 3: สรุปเคลียร์เงิน ---
+# --- TAB 3: สรุปและเคลียร์เงิน ---
 with tab3:
-    st.header("🤝 สรุปยอดโอนเงิน")
+    st.header("🤝 สรุปยอดโอนเงินรวบยอด")
     conn = get_db_connection()
     expenses_rows = conn.execute("SELECT * FROM expenses WHERE trip_id = ?", (trip_id,)).fetchall()
     conn.close()
 
     if not expenses_rows:
-        st.info("ยังไม่มีข้อมูล")
+        st.info("ยังไม่มีบิลให้คำนวณ")
     else:
         net_balances = {m: 0.0 for m in existing_members}
         for row in expenses_rows:
-            s_list = row['split_members'].split(",") if row['split_members'] else []
-            if not s_list: continue
-            net_balances[row['payer_name']] += row['amount']
-            share = row['amount'] / len(s_list)
-            for m in s_list: net_balances[m] -= share
+            p, a, s_str = row['payer_name'], row['amount'], row['split_members']
+            if not s_str:  # ข้ามกรณีไม่มีคนหารเพื่อความปลอดภัยของโค้ด
+                continue
+            s_list = s_str.split(",")
+            net_balances[p] += a
+            share = a / len(s_list)
+            for m in s_list:
+                net_balances[m] -= share
         
         c1, c2 = st.columns(2)
         with c1:
-            st.write("**🟢 คนที่ต้องได้รับคืน:**")
+            st.write("**🟢 คนที่ต้องได้รับเงินคืน:**")
             for m, b in net_balances.items():
-                if b > 0.01: st.success(f"{m}: {b:,.2f} บาท")
+                if b > 0.01: st.success(f"{m}: `{b:,.2f}` บาท")
         with c2:
-            st.write("**🔴 คนที่ต้องจ่าย:**")
+            st.write("**🔴 คนที่ต้องจ่ายเพิ่ม:**")
             for m, b in net_balances.items():
-                if b < -0.01: st.error(f"{m}: {abs(b):,.2f} บาท")
+                if b < -0.01: st.error(f"{m}: `{abs(b):,.2f}` บาท")
 
-        # อัลกอริทึมเคลียร์เงิน
-        debtors = sorted([[m, b] for m, b in net_balances.items() if b < -0.01], key=lambda x: x[1])
-        creditors = sorted([[m, b] for m, b in net_balances.items() if b > 0.01], key=lambda x: x[1], reverse=True)
+        debtors = [[m, b] for m, b in net_balances.items() if b < -0.01]
+        creditors = [[m, b] for m, b in net_balances.items() if b > 0.01]
         
         st.write("---")
-        st.subheader("🚀 แผนโอนเงิน")
+        st.subheader("🚀 แผนโอนเงินที่สั้นที่สุด")
+        final_tx = []
         while debtors and creditors:
             amt = min(abs(debtors[0][1]), creditors[0][1])
             st.info(f"💳 **{debtors[0][0]}** โอนให้ **{creditors[0][0]}** ยอด **{amt:,.2f}** บาท")
+            final_tx.append((debtors[0][0], creditors[0][0], amt))
             debtors[0][1] += amt
             creditors[0][1] -= amt
             if abs(debtors[0][1]) < 0.01: debtors.pop(0)
             if abs(creditors[0][1]) < 0.01: creditors.pop(0)
+
+        if st.button("🎯 บันทึกสรุปยอดปิดทริป", type="primary"):
+            conn = get_db_connection()
+            conn.execute("DELETE FROM settlements WHERE trip_id = ?", (trip_id,))
+            for t in final_tx:
+                conn.execute("INSERT INTO settlements (trip_id, debtor, creditor, amount) VALUES (?,?,?,?)", (trip_id, t[0], t[1], t[2]))
+            conn.commit()
+            conn.close()
+            st.success("บันทึกประวัติการเคลียร์เงินแล้ว!")
+            st.rerun()
+
+        st.write("---")
+        st.subheader("📋 ประวัติการเคลียร์เงินที่บันทึกไว้")
+        conn = get_db_connection()
+        saved = conn.execute("SELECT * FROM settlements WHERE trip_id = ?", (trip_id,)).fetchall()
+        conn.close()
+        if saved:
+            st.table(pd.DataFrame([{"จาก": s['debtor'], "ถึง": s['creditor'], "จำนวน": f"{s['amount']:,.2f}"} for s in saved]))
+        else: 
+            st.caption("ยังไม่มีบันทึก")
