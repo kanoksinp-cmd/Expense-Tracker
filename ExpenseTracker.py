@@ -77,7 +77,7 @@ init_db()
 st.sidebar.header("⚙️ ระบบจัดการข้อมูล")
 
 # 3.1 ลงทะเบียน User
-with st.sidebar.expander("👤 ลงทะเบียน User (ทำครั้งเดียว)"):
+with st.sidebar.expander("👤 ลงทะเบียนรายชื่อสมาชิก"):
     reg_name = st.text_input("ระบุชื่อผู้ใช้งาน:").strip()
     if st.button("ลงทะเบียน"):
         if reg_name:
