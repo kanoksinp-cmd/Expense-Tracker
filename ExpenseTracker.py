@@ -1,193 +1,188 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-import hashlib
-from datetime import datetime
-import plotly.express as px
 
-# --- 1. จัดการฐานข้อมูล ---
-DB_FILE = 'expense_tracker.db'
+# ตั้งค่าหน้าเว็บ
+st.set_page_config(page_title="Trip Expense Splitter", layout="wide")
 
-def get_connection():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
+# ประกาศตัวแปรจำลองฐานข้อมูลใน Session State (ข้อมูลจะอยู่จนกว่าจะปิดแอป)
+if "trips" not in st.session_state:
+    st.session_state.trips = {}
 
-def init_db():
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)')
-        c.execute('CREATE TABLE IF NOT EXISTS trips (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, budget REAL, created_by TEXT)')
-        c.execute('CREATE TABLE IF NOT EXISTS trip_members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, username TEXT)')
-        c.execute('CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, category TEXT, amount REAL, note TEXT, created_by TEXT, trip_id INTEGER)')
-        conn.commit()
+st.title("✈️ ระบบจัดการและหารค่าใช้จ่ายสำหรับทริป (Trip Expense Manager)")
+st.caption("ควบคุมและจัดการโดย Leader ประจำทริป")
 
-init_db()
+# --- ส่วนที่ 1: การจัดการทริปและสมาชิก (โดย User/Admin) ---
+st.sidebar.header("🛠️ ส่วนควบคุมของ Leader")
 
-# --- 2. ระบบ Login / Register ---
-st.set_page_config(page_title="Trip Shared Expense", layout="wide")
+# 1.1 สร้างทริปใหม่
+new_trip = st.sidebar.text_input("➕ สร้างทริปใหม่ (เช่น ทริปญี่ปุ่น 2026):").strip()
+if st.sidebar.button("บันทึกทริป"):
+    if new_trip and new_trip not in st.session_state.trips:
+        st.session_state.trips[new_trip] = {"members": [], "expenses": []}
+        st.sidebar.success(f"สร้างทริป '{new_trip}' สำเร็จ!")
+    elif new_trip in st.session_state.trips:
+        st.sidebar.warning("มีชื่อทริปนี้อยู่แล้ว")
 
-if 'username' not in st.session_state: st.session_state.username = None
-if 'current_trip_name' not in st.session_state: st.session_state.current_trip_name = None
+# ตรวจสอบว่ามีทริปในระบบหรือยัง
+if not st.session_state.trips:
+    st.info("👋 ยินดีต้อนรับ! กรุณาสร้างทริปแรกที่แถบเครื่องมือด้านซ้ายก่อนครับ")
+    st.stop()
 
-if not st.session_state.username:
-    st.title("💰 Trip Expense Master")
-    tab_login, tab_reg = st.tabs(["เข้าสู่ระบบ", "สมัครสมาชิก"])
-    with tab_login:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type='password')
-        if st.button("Login", use_container_width=True):
-            with get_connection() as conn:
-                res = conn.cursor().execute('SELECT password FROM users WHERE username=?', (u,)).fetchone()
-            if res and res[0] == hashlib.sha256(str.encode(p)).hexdigest():
-                st.session_state.username = u
-                st.rerun()
-            else: st.error("ชื่อหรือรหัสผ่านไม่ถูกต้อง")
-    with tab_reg:
-        su = st.text_input("New Username")
-        sp = st.text_input("New Password", type='password')
-        if st.button("Sign Up", use_container_width=True):
-            with get_connection() as conn:
-                try:
-                    conn.cursor().execute('INSERT INTO users(username, password) VALUES (?,?)', (su, hashlib.sha256(str.encode(sp)).hexdigest()))
-                    conn.commit()
-                    st.success("สมัครสมาชิกสำเร็จ!")
-                except: st.error("ชื่อนี้มีผู้ใช้งานแล้ว")
+# 1.2 เลือกทริปที่จะจัดการ
+current_trip = st.sidebar.selectbox("🗺️ เลือกทริปที่ต้องการจัดการ:", list(st.session_state.trips.keys()))
 
+# 1.3 เพิ่มสมาชิกในทริปที่เลือก
+st.sidebar.subheader(f"👥 สมาชิกใน {current_trip}")
+new_member = st.sidebar.text_input("➕ เพิ่มชื่อผู้ร่วมทริป:").strip()
+if st.sidebar.button("เพิ่มสมาชิก"):
+    if new_member and new_member not in st.session_state.trips[current_trip]["members"]:
+        st.session_state.trips[current_trip]["members"].append(new_member)
+        st.sidebar.success(f"เพิ่มคุณ {new_member} เข้าทริปแล้ว")
+    elif new_member in st.session_state.trips[current_trip]["members"]:
+        st.sidebar.warning("มีชื่อสมาชิกคนนี้อยู่แล้ว")
+
+# แสดงรายชื่อสมาชิกปัจจุบัน
+members = st.session_state.trips[current_trip]["members"]
+if members:
+    st.sidebar.write(f"**รายชื่อสมาชิก ({len(members)} คน):** " + ", ".join(members))
 else:
-    user_now = st.session_state.username
+    st.sidebar.info("ยังไม่มีสมาชิกในทริปนี้ กรุณาเพิ่มรายชื่อ")
 
-    # ดึงทริปทั้งหมดที่มีชื่อเราอยู่ (เพื่อให้เพื่อนเห็นทริปที่ร่วมอยู่ด้วย)
-    with get_connection() as conn:
-        my_trips_df = pd.read_sql_query('''
-            SELECT DISTINCT t.* FROM trips t
-            JOIN trip_members tm ON t.id = tm.trip_id
-            WHERE LOWER(tm.username) = LOWER(?)
-        ''', conn, params=(user_now,))
 
-    # Sidebar
-    st.sidebar.title(f"👤 {user_now}")
-    menu = st.sidebar.radio("เมนูหลัก", ["🧳 ทริปของฉัน", "➕ สร้างทริปใหม่"])
-    if st.sidebar.button("Logout"):
-        st.session_state.username = None
-        st.rerun()
+# --- ส่วนที่ 2: หน้าหลักการบันทึกค่าใช้จ่าย ---
+if not members:
+    st.warning("⚠️ กรุณาเพิ่มสมาชิกอย่างน้อย 1 คนก่อนเริ่มบันทึกค่าใช้จ่าย")
+    st.stop()
 
-    # --- หน้าหลัก: ทริปของฉัน ---
-    if menu == "🧳 ทริปของฉัน":
-        if my_trips_df.empty:
-            st.info("คุณยังไม่มีทริปในตอนนี้ (ลองให้เพื่อนดึงเข้าทริป หรือสร้างทริปใหม่)")
-            if st.button("🔄 รีเฟรช"): st.rerun()
-        else:
-            # ส่วนการเลือกทริป (ทุกคนที่อยู่ในทริปจะเห็นชื่อทริปปรากฏที่นี่เหมือนกัน)
-            trip_list = my_trips_df['name'].tolist()
-            if st.session_state.current_trip_name not in trip_list:
-                st.session_state.current_trip_name = trip_list[0]
-            
-            sel_trip = st.selectbox("🎯 เลือกทริปที่ต้องการใช้งานร่วมกัน", trip_list, 
-                                    index=trip_list.index(st.session_state.current_trip_name))
-            st.session_state.current_trip_name = sel_trip
-            
-            t_data = my_trips_df[my_trips_df['name'] == sel_trip].iloc[0]
-            t_id = t_data['id']
-            is_owner = (t_data['created_by'] == user_now)
+tab1, tab2, tab3 = st.tabs(["📝 บันทึกค่าใช้จ่าย", "📊 ประวัติและสรุป", "💰 วิธีเคลียร์เงิน (Settlement)"])
 
-            # หัวข้อทริปและสถานะ
-            st.title(f"🚢 ทริป: {sel_trip}")
-            if is_owner:
-                st.caption("🛡️ คุณคือผู้สร้างทริปนี้ (มีสิทธิ์ลบทริปและสมาชิก)")
+with tab1:
+    st.header(f"➕ บันทึกรายจ่ายประจำทริป: {current_trip}")
+    
+    with st.form("expense_form", clear_on_submit=True):
+        description = st.text_input("รายการค่าใช้จ่าย (เช่น ค่าที่พัก, ค่าน้ำมัน, ค่าอาหารมื้อแรก):")
+        amount = st.number_input("จำนวนเงิน (บาท):", min_value=0.0, step=100.0, format="%.2f")
+        payer = st.selectbox("ใครเป็นคนสำรองจ่ายเงิน?", members)
+        
+        st.write("**ใครต้องหารรายการนี้บ้าง?** (เลือกทั้งหมด หรือเลือกเฉพาะบางคน)")
+        # สร้าง Checkbox ให้เลือกว่าใครร่วมหารบ้าง
+        split_with = []
+        for member in members:
+            if st.checkbox(member, value=True, key=f"split_{member}"):
+                split_with.append(member)
+                
+        submit_btn = st.form_submit_button("💾 บันทึกรายการ")
+        
+        if submit_btn:
+            if not description:
+                st.error("กรุณากรอกรายการค่าใช้จ่าย")
+            elif amount <= 0:
+                st.error("จำนวนเงินต้องมากกว่า 0 บาท")
+            elif not split_with:
+                st.error("ต้องมีผู้ร่วมหารอย่างน้อย 1 คน")
             else:
-                st.caption(f"👥 สมาชิกทริป (ผู้สร้าง: {t_data['created_by']})")
+                # บันทึกข้อมูลลงสถานะทริป
+                expense_data = {
+                    "รายการ": description,
+                    "จำนวนเงิน": amount,
+                    "คนจ่าย": payer,
+                    "คนหาร": split_with
+                }
+                st.session_state.trips[current_trip]["expenses"].append(expense_data)
+                st.success(f"บันทึกรายการ '{description}' เรียบร้อย!")
 
-            tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายจ่าย", "📊 สรุปกองกลาง", "👥 สมาชิกทริป"])
+with tab2:
+    st.header(f"📊 ตารางสรุปของทริป: {current_trip}")
+    expenses = st.session_state.trips[current_trip]["expenses"]
+    
+    if not expenses:
+        st.info("ยังไม่มีการบันทึกค่าใช้จ่ายในทริปนี้")
+    else:
+        # แปลงข้อมูลเป็น DataFrame เพื่อแสดงผลให้สวยงาม
+        df_display = []
+        for exp in expenses:
+            df_display.append({
+                "รายการ": exp["รายการ"],
+                "จำนวนเงิน (บาท)": exp["จำนวนเงิน"],
+                "ผู้สำรองจ่าย": exp["คนจ่าย"],
+                "ผู้ร่วมหาร": ", ".join(exp["คนหาร"])
+            })
+        st.dataframe(pd.DataFrame(df_display), use_container_width=True)
+        
+        total_trip_amount = sum([exp["จำนวนเงิน"] for exp in expenses])
+        st.metric(label="💰 รวมค่าใช้จ่ายทั้งหมดของทริปนี้", value=f"{total_trip_amount:,.2f} บาท")
 
-            with tab1: # ทุกคนบันทึกร่วมกันได้
-                st.subheader("เพิ่มรายการใช้จ่ายลงกองกลาง")
-                with st.form("shared_exp", clear_on_submit=True):
-                    amt = st.number_input("จำนวนเงิน (บาท)", min_value=0.0)
-                    cat = st.selectbox("หมวดหมู่", ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "อื่นๆ"])
-                    note = st.text_input("รายละเอียดเพิ่มเติม (เช่น จ่ายค่าอะไร หรือใครออกไปก่อน)")
-                    if st.form_submit_button("บันทึกข้อมูล"):
-                        with get_connection() as conn:
-                            conn.cursor().execute('INSERT INTO transactions(date, category, amount, note, created_by, trip_id) VALUES (?,?,?,?,?,?)',
-                                                 (datetime.now().strftime("%Y-%m-%d"), cat, amt, note, user_now, t_id))
-                            conn.commit()
-                        st.success("บันทึกสำเร็จ! ข้อมูลจะอัปเดตให้เพื่อนๆ เห็นทันที")
-                        st.rerun()
-
-            with tab2: # เห็นยอดรวมอัปเดตพร้อมกันแบบ Real-time
-                with get_connection() as conn:
-                    tx_df = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id=?', conn, params=(t_id,))
+with tab3:
+    st.header("🤝 สรุปยอดเคลียร์เงินบิล")
+    expenses = st.session_state.trips[current_trip]["expenses"]
+    
+    if not expenses:
+        st.info("บันทึกค่าใช้จ่ายก่อน ระบบจึงจะคำนวณการเคลียร์เงินให้")
+    else:
+        # คำนวณยอดสุทธิสุทธิของแต่ละคน (Net Balance)
+        # Net balance = (เงินที่จ่ายไปทั้งหมด) - (เงินที่ตัวเองต้องช่วยหารทั้งหมด)
+        net_balances = {member: 0.0 for member in members}
+        
+        for exp in expenses:
+            payer = exp["คนจ่าย"]
+            amount = exp["จำนวนเงิน"]
+            split_with = exp["คนหาร"]
+            
+            # คนจ่ายได้เงินคืนตามจำนวนเต็มก่อน
+            net_balances[payer] += amount
+            
+            # หารเฉลี่ยตามจำนวนคนที่มีส่วนร่วมในบิลนั้นๆ
+            share = amount / len(split_with)
+            for member in split_with:
+                net_balances[member] -= share
+        
+        # แสดงสถานะยอดเงินของแต่ละคน
+        st.subheader("💵 สถานะกระเป๋าเงินของแต่ละคน")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**คนที่ต้องได้เงินคืน (จ่ายเกินส่วนตัวเอง):**")
+            for member, bal in net_balances.items():
+                if bal > 0.01: # เลี่ยงปัญหานิยมปัดเศษคอมพิวเตอร์
+                    st.write(f"🟢 **{member}** ได้รับคืน: `{bal:,.2f}` บาท")
+        
+        with col2:
+            st.write("**คนที่ต้องจ่ายเพิ่ม (ใช้เงินไปมากกว่าที่ออก):**")
+            for member, bal in net_balances.items():
+                if bal < -0.01:
+                    st.write(f"🔴 **{member}** ต้องจ่ายเพิ่ม: `{abs(bal):,.2f}` บาท")
+        
+        st.write("---")
+        st.subheader("🚀 สรุปขั้นตอนการโอนเงิน (โอนแบบจ่ายน้อยที่สุด)")
+        
+        # Algorithm คำนวณการเคลียร์หนี้แบบจับคู่ (Greedy Debt Settler)
+        debtors = [[m, bal] for m, bal in net_balances.items() if bal < -0.01]
+        creditors = [[m, bal] for m, bal in net_balances.items() if bal > 0.01]
+        
+        transactions = []
+        
+        while debtors and creditors:
+            # ดึงคนที่ติดหนี้มากที่สุด และคนที่จะได้เงินคืนมากที่สุด
+            debtor_name, debtor_bal = debtors[0]
+            creditor_name, creditor_bal = creditors[0]
+            
+            # จำนวนเงินที่จะโอนในรอบนี้
+            amount_to_pay = min(abs(debtor_bal), creditor_bal)
+            
+            transactions.append(f"👤 **{debtor_name}** โอนเงินให้ **{creditor_name}** เป็นจำนวน 👉 `{amount_to_pay:,.2f}` บาท")
+            
+            # อัปเดตยอดคงเหลือ
+            debtors[0][1] += amount_to_pay
+            creditors[0][1] -= amount_to_pay
+            
+            # ถ้าใครเคลียร์ยอดหมดแล้ว ให้เอาออกจากลิสต์
+            if abs(debtors[0][1]) < 0.01:
+                debtors.pop(0)
+            if abs(creditors[0][1]) < 0.01:
+                creditors.pop(0)
                 
-                if not tx_df.empty:
-                    c1, c2, c3 = st.columns(3)
-                    total_spent = tx_df['amount'].sum()
-                    c1.metric("ยอดจ่ายรวม", f"฿{total_spent:,.2f}")
-                    c2.metric("งบประมาณ", f"฿{t_data['budget']:,.2f}")
-                    c3.metric("คงเหลือ", f"฿{t_data['budget'] - total_spent:,.2f}")
-                    
-                    fig = px.pie(tx_df, values='amount', names='category', hole=0.4, title="สัดส่วนรายจ่ายรายหมวด")
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.write("📋 ประวัติการใช้จ่ายของทุกคนในกลุ่ม")
-                    st.dataframe(tx_df[['date', 'category', 'amount', 'created_by', 'note']], use_container_width=True)
-                else:
-                    st.info("ยังไม่มีข้อมูลรายจ่ายในทริปนี้ เริ่มบันทึกคนแรกได้เลย!")
-
-            with tab3: # ดูรายชื่อเพื่อน และจัดการสมาชิก
-                st.subheader("👥 สมาชิกในกลุ่มนี้")
-                with get_connection() as conn:
-                    m_list = pd.read_sql_query('''
-                        SELECT u.username FROM trip_members tm
-                        JOIN users u ON tm.username = u.username WHERE tm.trip_id = ?
-                    ''', conn, params=(t_id,))
-                
-                for _, m in m_list.iterrows():
-                    col_m1, col_m2 = st.columns([4, 1])
-                    col_m1.write(f"✅ **{m['username']}** {'(ผู้สร้าง)' if m['username'] == t_data['created_by'] else ''}")
-                    if is_owner and m['username'] != user_now:
-                        if col_m2.button("ลบออก", key=f"kick_{m['username']}"):
-                            with get_connection() as conn:
-                                conn.cursor().execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m['username']))
-                                conn.commit()
-                            st.rerun()
-                
-                if is_owner:
-                    st.divider()
-                    st.subheader("➕ ดึงเพื่อนเข้าทริป")
-                    target = st.text_input("ระบุ Username ของเพื่อน")
-                    if st.button("ดึงเพื่อนเข้ากลุ่มทันที"):
-                        with get_connection() as conn:
-                            # ค้นหา user (Case-insensitive)
-                            find_u = conn.cursor().execute('SELECT username FROM users WHERE LOWER(username) = LOWER(?)', (target,)).fetchone()
-                            if find_u:
-                                conn.cursor().execute('INSERT OR IGNORE INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, find_u[0]))
-                                conn.commit()
-                                st.success(f"ดึง {find_u[0]} เข้าทริปเรียบร้อย!")
-                                st.rerun()
-                            else: st.error("ไม่พบชื่อผู้ใช้นี้")
-                    
-                    st.divider()
-                    if st.button("🗑️ ลบทริปนี้ถาวร (สำหรับผู้สร้าง)", type="primary"):
-                        with get_connection() as conn:
-                            conn.cursor().execute('DELETE FROM trips WHERE id=?', (t_id,))
-                            conn.cursor().execute('DELETE FROM trip_members WHERE trip_id=?', (t_id,))
-                            conn.cursor().execute('DELETE FROM transactions WHERE trip_id=?', (t_id,))
-                            conn.commit()
-                        st.session_state.current_trip_name = None
-                        st.rerun()
-
-    # --- หน้า 2: สร้างทริป ---
-    elif menu == "➕ สร้างทริปใหม่":
-        st.header("➕ เริ่มต้นทริปใหม่")
-        with st.form("new_trip"):
-            t_name = st.text_input("ชื่อทริป (เช่น ทริปญี่ปุ่น 2024)")
-            t_bud = st.number_input("งบประมาณกองกลาง", min_value=0.0)
-            if st.form_submit_button("ตกลงสร้างทริป"):
-                if t_name:
-                    with get_connection() as conn:
-                        cur = conn.cursor()
-                        cur.execute('INSERT INTO trips(name, budget, created_by) VALUES (?,?,?)', (t_name, t_bud, user_now))
-                        new_id = cur.lastrowid
-                        cur.execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (new_id, user_now))
-                        conn.commit()
-                    st.session_state.current_trip_name = t_name
-                    st.success(f"สร้างทริป '{t_name}' สำเร็จ! ไปที่เมนู 'ทริปของฉัน' เพื่อดึงเพื่อนได้เลย")
-                    st.rerun()
+        if transactions:
+            for tx in transactions:
+                st.write(tx)
+        else:
+            st.success("🎉 ทุกคนลงตัวกันหมดแล้ว ไม่ต้องโอนเงินเพิ่ม!")
