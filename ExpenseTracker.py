@@ -165,7 +165,7 @@ if not existing_members:
     st.warning("กรุณาเลือกสมาชิกเข้าทริปก่อน")
     st.stop()
 
-st.title(f"📍 ทริป: {current_trip}")
+st.title(f"✈️ข้อมูลทริป: {current_trip}")
 tab1, tab2, tab3 = st.tabs(["📝สร้างบิลใหม่", "📊 ประวัติบิล", "💰 สรุปเคลียร์เงินสมาชิก"])
 
 with tab1:
