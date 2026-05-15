@@ -28,6 +28,7 @@ def get_connection():
 def create_tables():
     conn = get_connection()
     c = conn.cursor()
+    # สร้างตารางพื้นฐาน
     c.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, profile_pic TEXT, last_active TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS trips (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, budget REAL, created_by TEXT, created_at TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS trip_members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, username TEXT)')
@@ -36,6 +37,13 @@ def create_tables():
                   note TEXT, bill_path TEXT, created_by TEXT, updated_by TEXT, trip_id INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS notifications 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)''')
+    
+    # --- แก้ไข OperationalError: ตรวจสอบ Column ที่อาจขาดหายไป ---
+    try:
+        c.execute('SELECT last_active FROM users LIMIT 1')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE users ADD COLUMN last_active TEXT')
+    
     conn.commit()
     conn.close()
 
@@ -49,7 +57,7 @@ def add_notify(receiver, message):
     conn.commit()
     conn.close()
 
-def save_uploaded_file(uploaded_file, folder, prefix):
+def save_file(uploaded_file, folder, prefix):
     if uploaded_file:
         ext = uploaded_file.name.split('.')[-1]
         filename = f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
@@ -60,17 +68,19 @@ def save_uploaded_file(uploaded_file, folder, prefix):
     return None
 
 def update_user_active(username):
-    conn = get_connection()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn.cursor().execute('UPDATE users SET last_active=? WHERE username=?', (now_str, username))
-    conn.commit()
-    conn.close()
+    if username:
+        conn = get_connection()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.cursor().execute('UPDATE users SET last_active=? WHERE username=?', (now_str, username))
+        conn.commit()
+        conn.close()
 
 # --- UI Setup ---
-st.set_page_config(page_title="Trip Expense Tracker", layout="wide")
+st.set_page_config(page_title="Trip Expense Master", layout="wide")
 
-if 'logged_in' not in st.session_state: st.session_state.logged_in = False
-if 'editing_id' not in st.session_state: st.session_state.editing_id = None
+if 'logged_in' not in st.session_state: 
+    st.session_state.logged_in = False
+    st.session_state.username = None
 
 def main():
     if not st.session_state.logged_in:
@@ -98,149 +108,147 @@ def main():
                     try:
                         conn.cursor().execute('INSERT INTO users(username, password) VALUES (?,?)', (s_user, make_hashes(s_pw)))
                         conn.commit()
-                        st.success("สมัครสำเร็จ!")
+                        st.success("สมัครสำเร็จ! กรุณาเข้าสู่ระบบ")
                     except sqlite3.IntegrityError: st.error("ชื่อนี้มีคนใช้แล้ว")
                     finally: conn.close()
     else:
-        update_user_active(st.session_state.username)
+        # --- LOGIN แล้ว ---
         user_now = st.session_state.username
+        update_user_active(user_now)
         
         conn = get_connection()
-        user_df = pd.read_sql_query('SELECT * FROM users', conn)
-        my_trips_df = pd.read_sql_query('''
+        user_info = pd.read_sql_query('SELECT * FROM users WHERE username = ?', conn, params=(user_now,)).iloc[0]
+        my_trips = pd.read_sql_query('''
             SELECT DISTINCT t.* FROM trips t
             LEFT JOIN trip_members m ON t.id = m.trip_id
             WHERE t.created_by = ? OR m.username = ?
         ''', conn, params=(user_now, user_now))
         notis = pd.read_sql_query('SELECT * FROM notifications WHERE receiver = ? ORDER BY id DESC LIMIT 10', conn, params=(user_now,))
-        unread_count = len(notis[notis['is_read'] == 0])
         conn.close()
 
         # Sidebar
         st.sidebar.title(f"👤 {user_now}")
-        u_info = user_df[user_df['username'] == user_now].iloc[0]
-        p_pic = u_info['profile_pic']
+        
+        # --- แก้ TypeError: ตรวจสอบรูปโปรไฟล์ก่อนใช้ os.path.exists ---
+        p_pic = user_info['profile_pic']
         if p_pic and isinstance(p_pic, str) and os.path.exists(p_pic):
             st.sidebar.image(p_pic, width=100)
+        else:
+            st.sidebar.caption("ยังไม่มีรูปโปรไฟล์")
             
-        noti_label = f"🔔 แจ้งเตือน ({unread_count})" if unread_count > 0 else "🔔 แจ้งเตือน"
-        menu = st.sidebar.radio("เมนูหลัก", [noti_label, "🧳 ทริปของฉัน", "➕ สร้างทริปใหม่", "⚙️ ตั้งค่าโปรไฟล์"])
+        unread = len(notis[notis['is_read'] == 0])
+        noti_btn = f"🔔 แจ้งเตือน ({unread})" if unread > 0 else "🔔 แจ้งเตือน"
+        menu = st.sidebar.radio("เมนูหลัก", [noti_btn, "🧳 ทริปของฉัน", "➕ สร้างทริปใหม่", "⚙️ ตั้งค่าโปรไฟล์"])
 
         if st.sidebar.button("Logout"):
             st.session_state.logged_in = False
+            st.session_state.username = None
             st.rerun()
 
-        # --- 0. เมนูแจ้งเตือน ---
-        if menu == noti_label:
-            st.header("🔔 การแจ้งเตือน")
-            if notis.empty: st.info("ไม่มีการแจ้งเตือน")
+        # --- เมนู: แจ้งเตือน ---
+        if menu == noti_btn:
+            st.header("🔔 กล่องข้อความ")
+            if notis.empty: st.info("ไม่มีแจ้งเตือน")
             else:
                 if st.button("อ่านทั้งหมด"):
                     conn = get_connection(); conn.cursor().execute('UPDATE notifications SET is_read = 1 WHERE receiver = ?', (user_now,)); conn.commit(); conn.close(); st.rerun()
                 for _, n in notis.iterrows():
-                    st.toast(n['message']) if n['is_read'] == 0 else None
-                    st.markdown(f"**{n['created_at']}**: {n['message']}")
+                    bg = "#f0f2f6" if n['is_read'] == 0 else "transparent"
+                    st.markdown(f'<div style="background:{bg}; padding:10px; border-radius:5px; margin-bottom:5px;">{n["message"]} <br><small>{n["created_at"]}</small></div>', unsafe_allow_html=True)
 
-        # --- 1. เมนู: ทริปของฉัน ---
+        # --- เมนู: ทริปของฉัน ---
         elif menu == "🧳 ทริปของฉัน":
-            if my_trips_df.empty: st.info("คุณยังไม่มีทริป")
+            if my_trips.empty: st.info("คุณยังไม่มีทริป")
             else:
-                sel_trip_name = st.selectbox("เลือกทริป", my_trips_df['name'].tolist())
-                t_row = my_trips_df[my_trips_df['name'] == sel_trip_name].iloc[0]
-                t_id = t_row['id']
-                is_creator = (t_row['created_by'] == user_now)
+                sel_trip = st.selectbox("เลือกทริป", my_trips['name'].tolist())
+                t_data = my_trips[my_trips['name'] == sel_trip].iloc[0]
+                t_id = t_data['id']
+                is_admin = (t_data['created_by'] == user_now)
 
-                tab1, tab2, tab3 = st.tabs(["📝 บันทึก", "📊 สรุปยอด & ประวัติ", "👥 จัดการสมาชิก"])
+                t1, t2, t3 = st.tabs(["📝 บันทึกรายจ่าย", "📊 สรุปยอด & สลิป", "👥 จัดการสมาชิก"])
 
-                with tab1:
-                    st.subheader("➕ เพิ่มรายการ")
-                    with st.form("add_form", clear_on_submit=True):
+                with t1:
+                    with st.form("add_exp", clear_on_submit=True):
                         c1, c2 = st.columns(2)
                         date = c1.date_input("วันที่")
                         ttype = c1.selectbox("ประเภท", ["รายจ่าย", "รายรับ"])
                         amt = c2.number_input("จำนวนเงิน", min_value=0.0)
                         cat = c2.selectbox("หมวดหมู่", ["อาหาร", "ที่พัก", "เดินทาง", "อื่นๆ"])
                         note = st.text_area("หมายเหตุ")
-                        bill = st.file_uploader("แนบสลิป", type=['jpg', 'png', 'jpeg'])
+                        file = st.file_uploader("แนบสลิป", type=['jpg','png','jpeg'])
                         if st.form_submit_button("บันทึก"):
-                            b_path = save_uploaded_file(bill, BILL_DIR, "bill")
+                            path = save_file(file, BILL_DIR, "bill")
                             conn = get_connection()
-                            conn.cursor().execute('INSERT INTO transactions(date, type, category, amount, note, bill_path, created_by, trip_id) VALUES (?,?,?,?,?,?,?,?)', 
-                                                  (date.strftime("%Y-%m-%d"), ttype, cat, amt, note, b_path, user_now, t_id))
-                            members = conn.cursor().execute('SELECT username FROM trip_members WHERE trip_id = ? AND username != ?', (t_id, user_now)).fetchall()
-                            for m in members: add_notify(m[0], f"📢 {user_now} อัปเดต {ttype} ทริป {sel_trip_name} ฿{amt:,.2f}")
+                            conn.cursor().execute('INSERT INTO transactions(date,type,category,amount,note,bill_path,created_by,trip_id) VALUES (?,?,?,?,?,?,?,?)',
+                                                  (date.strftime("%Y-%m-%d"), ttype, cat, amt, note, path, user_now, t_id))
+                            # แจ้งเตือนเพื่อน
+                            m_list = conn.cursor().execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
+                            for m in m_list: add_notify(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}")
                             conn.commit(); conn.close(); st.success("บันทึกแล้ว"); st.rerun()
 
-                with tab2:
+                with t2:
                     conn = get_connection()
-                    df_trans = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id = ? ORDER BY date DESC', conn, params=(t_id,))
+                    df = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id = ? ORDER BY date DESC', conn, params=(t_id,))
                     conn.close()
-                    exp = df_trans[df_trans['type'] == 'รายจ่าย']['amount'].sum()
-                    inc = df_trans[df_trans['type'] == 'รายรับ']['amount'].sum()
-                    st.subheader(f"💰 สรุปยอด: {sel_trip_name}")
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("งบประมาณ", f"฿{t_row['budget']:,.2f}")
-                    m2.metric("ใช้จ่ายไป", f"฿{exp:,.2f}")
-                    m3.metric("คงเหลือ", f"฿{t_row['budget'] - exp + inc:,.2f}")
-                    st.divider()
-                    for _, row in df_trans.iterrows():
-                        with st.expander(f"{row['date']} | {row['category']} - ฿{row['amount']:,.2f}"):
-                            ca, cb = st.columns([2,1])
-                            ca.write(f"โดย: {row['created_by']}\n\nโน้ต: {row['note']}")
-                            if row['bill_path']: cb.image(row['bill_path'])
-                            if st.button("🗑️ ลบรายการ", key=f"del_{row['id']}"):
-                                conn = get_connection(); conn.cursor().execute('DELETE FROM transactions WHERE id=?', (row['id'],)); conn.commit(); conn.close(); st.rerun()
-
-                with tab3:
-                    st.subheader("👥 สมาชิกในทริป")
-                    conn = get_connection()
-                    curr_m = pd.read_sql_query('SELECT username FROM trip_members WHERE trip_id = ?', conn, params=(t_id,))
+                    exp = df[df['type'] == 'รายจ่าย']['amount'].sum()
+                    inc = df[df['type'] == 'รายรับ']['amount'].sum()
+                    st.subheader("💰 สถานะการเงินทริป")
+                    c_1, c_2, c_3 = st.columns(3)
+                    c_1.metric("งบประมาณ", f"฿{t_data['budget']:,.2f}")
+                    c_2.metric("จ่ายจริง", f"฿{exp:,.2f}", delta=f"-{exp}", delta_color="inverse")
+                    c_3.metric("คงเหลือ", f"฿{t_data['budget'] - exp + inc:,.2f}")
                     
-                    for m_user in curr_m['username'].tolist():
-                        col_m1, col_m2 = st.columns([4, 1])
-                        role = "(ผู้สร้าง)" if m_user == t_row['created_by'] else ""
-                        col_m1.write(f"• {m_user} {role}")
-                        # ผู้สร้างทริปสามารถลบสมาชิกคนอื่นได้
-                        if is_creator and m_user != user_now:
-                            if col_m2.button("เตะออก", key=f"kick_{m_user}"):
-                                conn.cursor().execute('DELETE FROM trip_members WHERE trip_id = ? AND username = ?', (t_id, m_user))
-                                add_notify(m_user, f"❌ คุณถูกนำออกจากทริป '{sel_trip_name}' โดยผู้สร้าง")
+                    st.divider()
+                    for _, r in df.iterrows():
+                        with st.expander(f"{r['date']} | {r['category']} - ฿{r['amount']:,.2f}"):
+                            col_l, col_r = st.columns([2,1])
+                            col_l.write(f"ผู้บันทึก: {r['created_by']}\n\nโน้ต: {r['note']}")
+                            if r['bill_path']: col_r.image(r['bill_path'])
+                            if st.button("🗑️ ลบ", key=f"del_{r['id']}"):
+                                conn = get_connection(); conn.cursor().execute('DELETE FROM transactions WHERE id=?', (r['id'],)); conn.commit(); conn.close(); st.rerun()
+
+                with t3:
+                    st.subheader("👥 สมาชิก")
+                    conn = get_connection()
+                    members = pd.read_sql_query('SELECT username FROM trip_members WHERE trip_id = ?', conn, params=(t_id,))
+                    for m in members['username']:
+                        cm1, cm2 = st.columns([4,1])
+                        cm1.write(f"• {m} {'(Admin)' if m == t_data['created_by'] else ''}")
+                        if is_admin and m != user_now:
+                            if cm2.button("เตะ", key=f"k_{m}"):
+                                conn.cursor().execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m))
+                                add_notify(m, f"❌ คุณถูกเชิญออกจากทริป {sel_trip}")
                                 conn.commit(); conn.close(); st.rerun()
                     
-                    st.divider()
-                    if is_creator:
-                        st.subheader("📩 เชิญเพื่อนใหม่")
-                        all_u = [u for u in user_df['username'].tolist() if u not in curr_m['username'].tolist()]
-                        if all_u:
-                            friend = st.selectbox("เลือกเพื่อน", all_u)
-                            if st.button("เชิญ"):
-                                conn.cursor().execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, friend))
-                                add_notify(friend, f"✉️ {user_now} เชิญคุณเข้าทริป '{sel_trip_name}'")
-                                conn.commit(); conn.close(); st.success("เชิญแล้ว"); st.rerun()
-                        else: st.write("ไม่มีสมาชิกให้เชิญเพิ่ม")
-                    else: st.caption("สิทธิ์การเชิญและลบสมาชิกเป็นของผู้สร้างทริปเท่านั้น")
+                    if is_admin:
+                        st.divider()
+                        all_users = pd.read_sql_query('SELECT username FROM users', conn)['username'].tolist()
+                        invite_list = [u for u in all_users if u not in members['username'].tolist()]
+                        friend = st.selectbox("เชิญเพื่อน", invite_list)
+                        if st.button("เพิ่มเข้าทริป"):
+                            conn.cursor().execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, friend))
+                            add_notify(friend, f"✉️ {user_now} เชิญคุณเข้าทริป {sel_trip}")
+                            conn.commit(); conn.close(); st.success("เชิญแล้ว"); st.rerun()
 
         elif menu == "➕ สร้างทริปใหม่":
             st.header("➕ สร้างทริปใหม่")
-            with st.form("c_trip"):
-                tn = st.text_input("ชื่อทริป")
-                tb = st.number_input("งบประมาณ", min_value=0.0)
-                if st.form_submit_button("สร้าง"):
-                    if tn:
+            with st.form("new_trip"):
+                name = st.text_input("ชื่อทริป")
+                budget = st.number_input("งบประมาณ", min_value=0.0)
+                if st.form_submit_button("สร้างทริป"):
+                    if name:
                         conn = get_connection(); cur = conn.cursor()
-                        cur.execute('INSERT INTO trips(name, budget, created_by, created_at) VALUES (?,?,?,?)', (tn, tb, user_now, datetime.now().strftime("%Y-%m-%d")))
+                        cur.execute('INSERT INTO trips(name, budget, created_by, created_at) VALUES (?,?,?,?)', (name, budget, user_now, datetime.now().strftime("%Y-%m-%d")))
                         cur.execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (cur.lastrowid, user_now))
                         conn.commit(); conn.close(); st.success("สร้างทริปสำเร็จ!"); st.rerun()
 
         elif menu == "⚙️ ตั้งค่าโปรไฟล์":
-            st.header("⚙️ ตั้งค่าโปรไฟล์")
-            img = st.file_uploader("เปลี่ยนรูป", type=['jpg', 'png'])
-            if st.button("บันทึก") and img:
-                p_path = save_uploaded_file(img, PROFILE_DIR, f"profile_{user_now}")
-                conn = get_connection(); conn.cursor().execute('UPDATE users SET profile_pic=? WHERE username=?', (p_path, user_now)); conn.commit(); conn.close(); st.rerun()
-            st.divider()
-            for _, u in user_df.iterrows():
-                st.write(f"**{u['username']}** | ล่าสุด: {u['last_active']}")
+            st.header("⚙️ โปรไฟล์")
+            new_img = st.file_uploader("เปลี่ยนรูปโปรไฟล์", type=['jpg','png'])
+            if st.button("บันทึกรูป"):
+                if new_img:
+                    path = save_file(new_img, PROFILE_DIR, f"p_{user_now}")
+                    conn = get_connection(); conn.cursor().execute('UPDATE users SET profile_pic=? WHERE username=?', (path, user_now)); conn.commit(); conn.close(); st.rerun()
 
 if __name__ == '__main__':
     main()
