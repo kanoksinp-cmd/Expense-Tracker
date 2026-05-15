@@ -43,54 +43,17 @@ st.sidebar.header("🎨 หน้าตาแอปพลิเคชัน")
 selected_theme_name = st.sidebar.selectbox("เลือกธีมหน้าจอ:", list(THEMES.keys()), index=0)
 theme = THEMES[selected_theme_name]
 
-# แทรก CSS เพื่อควบคุมสีตัวหนังสือในทุกจุด (Checkbox, Table, Input)
 st.markdown(f"""
     <style>
-        .stApp {{
-            background-color: {theme['bg']} !important;
-            color: {theme['text']} !important;
-        }}
-        [data-testid="stSidebar"] {{
-            background-color: {theme['sidebar']} !important;
-        }}
-        /* หัวข้อและตัวหนังสือทั่วไป */
-        h1, h2, h3, h4, h5, h6, p, span, label {{
-            color: {theme['text']} !important;
-        }}
-        /* ตัวหนังสือใน Checkbox (สำคัญมาก) */
-        .stCheckbox label span {{
-            color: {theme['text']} !important;
-        }}
-        /* กล่องฟอร์ม */
-        div[data-testid="stForm"] {{
-            background-color: {theme['card']} !important;
-            border: 1px solid {theme['border']} !important;
-            border-radius: 12px;
-            padding: 20px;
-        }}
-        /* Input Fields */
-        .stTextInput input, .stNumberInput input, div[data-baseweb="select"] {{
-            background-color: {theme['input_bg']} !important;
-            color: {theme['text']} !important;
-            border: 1px solid {theme['border']} !important;
-        }}
-        /* ตารางสรุป */
-        .stTable table {{
-            color: {theme['text']} !important;
-            background-color: {theme['card']} !important;
-        }}
-        .stTable thead tr th {{
-            color: {theme['text']} !important;
-        }}
-        /* ปุ่ม Primary */
-        button[kind="primary"] {{
-            background-color: {theme['primary']} !important;
-            color: white !important;
-        }}
-        /* Tab Navigation */
-        button[data-baseweb="tab"] p {{
-            color: {theme['text']} !important;
-        }}
+        .stApp {{ background-color: {theme['bg']} !important; color: {theme['text']} !important; }}
+        [data-testid="stSidebar"] {{ background-color: {theme['sidebar']} !important; }}
+        h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{ color: {theme['text']} !important; }}
+        .stCheckbox label span {{ color: {theme['text']} !important; font-weight: 500; }}
+        div[data-testid="stForm"] {{ background-color: {theme['card']} !important; border: 1px solid {theme['border']} !important; border-radius: 12px; }}
+        .stTextInput input, .stNumberInput input, div[data-baseweb="select"] {{ background-color: {theme['input_bg']} !important; color: {theme['text']} !important; border: 1px solid {theme['border']} !important; }}
+        .stTable table {{ color: {theme['text']} !important; background-color: {theme['card']} !important; }}
+        button[kind="primary"] {{ background-color: {theme['primary']} !important; color: white !important; border: none !important; }}
+        button[data-baseweb="tab"] p {{ color: {theme['text']} !important; }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -107,23 +70,9 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS all_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)')
     cursor.execute('CREATE TABLE IF NOT EXISTS trips (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, status INTEGER DEFAULT 0)')
-    try: cursor.execute('ALTER TABLE trips ADD COLUMN status INTEGER DEFAULT 0')
-    except: pass
     cursor.execute('CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, name TEXT, FOREIGN KEY(trip_id) REFERENCES trips(id))')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, description TEXT, 
-            amount REAL, payer_name TEXT, split_members TEXT, image_blob BLOB,
-            FOREIGN KEY(trip_id) REFERENCES trips(id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS settlements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, 
-            debtor TEXT, creditor TEXT, amount REAL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(trip_id) REFERENCES trips(id)
-        )
-    ''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, description TEXT, amount REAL, payer_name TEXT, split_members TEXT, image_blob BLOB, FOREIGN KEY(trip_id) REFERENCES trips(id))')
+    cursor.execute('CREATE TABLE IF NOT EXISTS settlements (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, debtor TEXT, creditor TEXT, amount REAL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(trip_id) REFERENCES trips(id))')
     conn.commit()
     conn.close()
 
@@ -147,10 +96,7 @@ with st.sidebar.expander("👤 ลงทะเบียน User"):
             try:
                 conn = get_db_connection()
                 conn.execute("INSERT INTO all_users (name) VALUES (?)", (reg_name,))
-                conn.commit()
-                conn.close()
-                st.toast("ลงทะเบียนสำเร็จ!")
-                st.rerun()
+                conn.commit(); conn.close(); st.toast("ลงทะเบียนสำเร็จ!"); st.rerun()
             except: st.sidebar.error("ชื่อนี้มีในระบบแล้ว")
 
 st.sidebar.markdown("---")
@@ -160,40 +106,48 @@ if st.sidebar.button("บันทึกทริป"):
         try:
             conn = get_db_connection()
             conn.execute("INSERT INTO trips (name, status) VALUES (?, 0)", (new_trip_name,))
-            conn.commit()
-            conn.close()
-            st.toast("สร้างทริปเรียบร้อย!")
-            st.rerun()
+            conn.commit(); conn.close(); st.toast("สร้างทริปเรียบร้อย!"); st.rerun()
         except: st.sidebar.error("ชื่อทริปซ้ำ")
 
+# --- ส่วนถังขยะพร้อมปุ่มลบถาวร ---
 conn = get_db_connection()
+with st.sidebar.expander("🗑️ ถังขยะ"):
+    deleted_trips = conn.execute("SELECT * FROM trips WHERE status = 1").fetchall()
+    if not deleted_trips:
+        st.caption("ไม่มีรายการในถังขยะ")
+    else:
+        for dt in deleted_trips:
+            c1, c2 = st.columns([1.5, 1.5])
+            c1.write(dt['name'])
+            sub_c1, sub_c2 = c2.columns(2)
+            if sub_c1.button("กู้คืน", key=f"res_{dt['id']}", help="กู้คืน"):
+                conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
+                conn.commit(); st.rerun()
+            if sub_c2.button("ลบ", key=f"pdel_{dt['id']}", help="ลบถาวร"):
+                # ลบข้อมูลที่เกี่ยวข้องทั้งหมด
+                conn.execute("DELETE FROM settlements WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM expenses WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM members WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM trips WHERE id = ?", (dt['id'],))
+                conn.commit(); st.rerun()
+
 active_trips_df = pd.read_sql_query("SELECT * FROM trips WHERE status = 0", conn)
 active_trip_list = active_trips_df["name"].tolist() if not active_trips_df.empty else []
 
-with st.sidebar.expander("🗑️ ถังขยะ"):
-    deleted_trips = conn.execute("SELECT * FROM trips WHERE status = 1").fetchall()
-    for dt in deleted_trips:
-        c1, c2 = st.columns([2, 1])
-        c1.write(dt['name'])
-        if c2.button("กู้คืน", key=f"res_{dt['id']}"):
-            conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
-            conn.commit(); st.rerun()
-
 if not active_trip_list:
-    st.title("✈️ Trip Expense Splitter")
-    st.info("กรุณาสร้างทริปใหม่ที่เมนูซ้ายมือ")
+    st.title("✈️ Trip Expense Splitter Pro")
+    st.info("กรุณาสร้างทริปใหม่ หรือกู้คืนจากถังขยะที่เมนูซ้ายมือ")
     st.stop()
 
 st.sidebar.markdown("---")
 current_trip = st.sidebar.selectbox("🗺️ เลือกทริป:", active_trip_list)
-trip_row = conn.execute("SELECT id FROM trips WHERE name = ? AND status = 0", (current_trip,)).fetchone()
-trip_id = trip_row["id"]
+trip_id = conn.execute("SELECT id FROM trips WHERE name = ? AND status = 0", (current_trip,)).fetchone()["id"]
 
 if st.sidebar.button("🗑️ ย้ายทริปลงถังขยะ"):
     conn.execute("UPDATE trips SET status = 1 WHERE id = ?", (trip_id,))
     conn.commit(); st.rerun()
 
-st.sidebar.subheader("👥 สมาชิกในทริป")
+st.sidebar.subheader(f"👥 สมาชิก: {current_trip}")
 all_users = [row["name"] for row in conn.execute("SELECT name FROM all_users").fetchall()]
 existing_members = [row["name"] for row in conn.execute("SELECT name FROM members WHERE trip_id = ?", (trip_id,)).fetchall()]
 available_users = [u for u in all_users if u not in existing_members]
@@ -207,11 +161,11 @@ conn.close()
 
 # --- 4. Main UI ---
 if not existing_members:
-    st.title(f"✈️ ทริป: {current_trip}")
+    st.title(f"📍 ทริป: {current_trip}")
     st.warning("กรุณาเลือกสมาชิกเข้าทริปก่อน")
     st.stop()
 
-st.title(f"✈️ ทริป: {current_trip}")
+st.title(f"📍 ทริป: {current_trip}")
 tab1, tab2, tab3 = st.tabs(["📝 บันทึกบิล", "📊 ประวัติและแก้ไข", "💰 สรุปเคลียร์เงิน"])
 
 with tab1:
@@ -245,14 +199,12 @@ with tab2:
                     else: st.caption("ไม่มีรูปสลิป")
                 with c2:
                     with st.form(f"edit_{row['id']}"):
-                        u_desc = st.text_input("ชื่อรายการ:", value=row['description'])
+                        u_desc = st.text_input("รายการ:", value=row['description'])
                         u_amt = st.number_input("จำนวนเงิน:", value=row['amount'])
                         u_payer = st.selectbox("คนจ่าย:", existing_members, index=existing_members.index(row['payer_name']))
                         st.write("คนหาร:")
                         u_split_to = [m for m in existing_members if st.checkbox(m, value=(m in row['split_members'].split(",")), key=f"ed_{row['id']}_{m}")]
                         u_file = st.file_uploader("เปลี่ยนรูปสลิป:", type=['jpg','png','jpeg'])
-                        
-                        # --- แก้ไขส่วนลบรูปภาพ ---
                         delete_img = st.checkbox("🗑️ ลบรูปภาพสลิปออก", key=f"delimg_{row['id']}")
                         
                         if st.form_submit_button("💾 อัปเดต", type="primary"):
@@ -281,8 +233,9 @@ with tab3:
         net = {m: 0.0 for m in existing_members}
         for r in expenses_rows:
             net[r['payer_name']] += r['amount']
-            share = r['amount'] / len(r['split_members'].split(","))
-            for m in r['split_members'].split(","): net[m] -= share
+            s_list = r['split_members'].split(",")
+            share = r['amount'] / len(s_list)
+            for m in s_list: net[m] -= share
         
         c1, c2 = st.columns(2)
         c1.write("**🟢 คนที่ต้องได้รับคืน:**")
@@ -310,5 +263,9 @@ with tab3:
             for t in final_tx: conn.execute("INSERT INTO settlements (trip_id, debtor, creditor, amount) VALUES (?,?,?,?)", (trip_id, t[0], t[1], t[2]))
             conn.commit(); conn.close(); st.success("บันทึกแล้ว!"); st.rerun()
 
-        saved = pd.read_sql_query(f"SELECT debtor as 'จาก', creditor as 'ถึง', amount as 'จำนวน' FROM settlements WHERE trip_id = {trip_id}", sqlite3.connect(DB_FILE))
+        st.write("---")
+        st.subheader("📋 ประวัติการเคลียร์")
+        conn = get_db_connection()
+        saved = pd.read_sql_query(f"SELECT debtor as 'จาก', creditor as 'ถึง', amount as 'จำนวน' FROM settlements WHERE trip_id = {trip_id}", conn)
+        conn.close()
         if not saved.empty: st.table(saved)
