@@ -4,7 +4,7 @@ import sqlite3
 import os
 import hashlib
 from datetime import datetime, timedelta
-import plotly.express as px  # เพิ่มสำหรับทำกราฟสรุปรายจ่าย
+import plotly.express as px
 
 # --- 1. ตั้งค่าฐานข้อมูลและระบบ Auto-Migration ---
 DB_FILE = 'expense_tracker.db'
@@ -76,6 +76,8 @@ st.set_page_config(page_title="Trip Expense Master", layout="wide")
 
 if 'username' not in st.session_state:
     st.session_state.username = None
+if 'editing_tx_id' not in st.session_state:
+    st.session_state.editing_tx_id = None  # เก็บ ID ของรายการที่กำลังแก้ไข
 
 if not st.session_state.username:
     st.title("💰 Trip Expense Tracker")
@@ -163,24 +165,18 @@ else:
                         else:
                             conn = get_connection()
                             cur = conn.cursor()
-                            
-                            # บันทึกข้อมูลเบื้องต้นเพื่อเอา ID
                             cur.execute('''INSERT INTO transactions(date,type,category,amount,note,trip_id,created_by) 
                                            VALUES (?,?,?,?,?,?,?)''',
                                         (datetime.now().strftime("%Y-%m-%d"), ttype, cat, amt, note, t_id, user_now))
                             tx_id = cur.lastrowid
                             
-                            # จัดการไฟล์ใบเสร็จ (ถ้ามีการอัปโหลด)
-                            bill_path = ""
                             if uploaded_file is not None:
                                 file_ext = uploaded_file.name.split(".")[-1]
                                 bill_path = f"{BILL_DIR}/receipt_{tx_id}.{file_ext}"
                                 with open(bill_path, "wb") as f:
                                     f.write(uploaded_file.getbuffer())
-                                # อัปเดต path กลับไปที่ transaction นั้นๆ
                                 cur.execute('UPDATE transactions SET bill_path=? WHERE id=?', (bill_path, tx_id))
                             
-                            # ส่งแจ้งเตือนเพื่อนในกลุ่ม
                             m_list = cur.execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
                             for m in m_list:
                                 send_notification(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}")
@@ -201,42 +197,111 @@ else:
                 if df.empty:
                     st.info("ยังไม่มีข้อมูลค่าใช้จ่ายในทริปนี้")
                 else:
-                    # คำนวณยอด
                     total_expense = df[df['type'] == 'รายจ่าย']['amount'].sum()
                     total_income = df[df['type'] == 'รายรับ']['amount'].sum()
-                    net_balance = total_income - total_expense
                     
-                    # แสดงผล KPI Card
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("งบประมาณทริป", f"฿{t_row['budget']:,.2f}")
                     c2.metric("รายจ่ายรวม", f"฿{total_expense:,.2f}", delta=f"-{total_expense}" if total_expense > 0 else None, delta_color="inverse")
                     c3.metric("คงเหลือในงบ", f"฿{(t_row['budget'] - total_expense):,.2f}")
                     
-                    # ระบบหารเท่า (Split Bill)
                     per_person = total_expense / member_count if member_count > 0 else 0
                     c4.metric("หารเฉลี่ยต่อคน", f"฿{per_person:,.2f}", f"สมาชิก {member_count} คน")
                     
                     st.divider()
                     
-                    # ส่วนแสดงกราฟ
+                    # --- ส่วนของฟอร์มแก้ไขข้อมูล (จะแสดงเมื่อมีการกดปุ่มแก้ไขเท่านั้น) ---
+                    if st.session_state.editing_tx_id is not None:
+                        st.info("🛠️ กำลังแก้ไขรายการ")
+                        conn = get_connection()
+                        tx_data = conn.cursor().execute('SELECT * FROM transactions WHERE id=?', (st.session_state.editing_tx_id,)).fetchone()
+                        conn.close()
+                        
+                        if tx_data:
+                            # ดึงข้อมูลเก่ามาใส่ในช่องกรอกข้อมูลเดิม
+                            with st.expander("📝 ฟอร์มแก้ไขรายการ บันทึกโดย " + tx_data[7], expanded=True):
+                                with st.form("edit_form"):
+                                    edit_type = st.selectbox("แก้ไขประเภท", ["รายจ่าย", "รายรับ"], index=0 if tx_data[2] == "รายจ่าย" else 1)
+                                    edit_amt = st.number_input("แก้ไขจำนวนเงิน (บาท)", min_value=0.0, value=float(tx_data[4]))
+                                    edit_cat = st.selectbox("แก้ไขหมวดหมู่", ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "อื่นๆ"], index=["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "อื่นๆ"].index(tx_data[3]) if tx_data[3] in ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "อื่นๆ"] else 4)
+                                    edit_note = st.text_area("แก้ไขโน้ต", value=tx_data[5])
+                                    edit_file = st.file_uploader("📷 เปลี่ยนรูปใบเสร็จใหม่ (ข้ามหากไม่ต้องการเปลี่ยน)", type=["jpg", "jpeg", "png"])
+                                    
+                                    c_btn1, c_btn2 = st.columns(2)
+                                    if c_btn1.form_submit_button("💾 บันทึกการเปลี่ยนแปลง", use_container_width=True):
+                                        conn = get_connection()
+                                        cur = conn.cursor()
+                                        
+                                        # จัดการรูปภาพกรณีอัปโหลดใหม่
+                                        current_bill_path = tx_data[6]
+                                        if edit_file is not None:
+                                            file_ext = edit_file.name.split(".")[-1]
+                                            current_bill_path = f"{BILL_DIR}/receipt_{tx_data[0]}.{file_ext}"
+                                            with open(current_bill_path, "wb") as f:
+                                                f.write(edit_file.getbuffer())
+                                                
+                                        cur.execute('''UPDATE transactions 
+                                                       SET type=?, category=?, amount=?, note=?, bill_path=? 
+                                                       WHERE id=?''', (edit_type, edit_cat, edit_amt, edit_note, current_bill_path, st.session_state.editing_tx_id))
+                                        conn.commit()
+                                        conn.close()
+                                        st.session_state.editing_tx_id = None # รีเซ็ตสถานะหลังบันทึก
+                                        st.success("อัปเดตรายการเรียบร้อยแล้ว!")
+                                        st.rerun()
+                                        
+                                    if c_btn2.form_submit_button("❌ ยกเลิก", use_container_width=True):
+                                        st.session_state.editing_tx_id = None
+                                        st.rerun()
+                        st.divider()
+
+                    # แสดงกราฟรายจ่าย
                     exp_df = df[df['type'] == 'รายจ่าย']
                     if not exp_df.empty:
                         st.subheader("📈 สัดส่วนรายจ่ายตามหมวดหมู่")
-                        fig = px.pie(exp_df, values='amount', names='category', hole=0.4,
-                                     color_discrete_sequence=px.colors.sequential.RdBu)
+                        fig = px.pie(exp_df, values='amount', names='category', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
                         st.plotly_chart(fig, use_container_width=True)
                     
-                    # ตารางข้อมูลดิบ
+                    # --- รายการธุรกรรมพร้อมปุ่มแก้ไข/ลบ ---
                     st.subheader("📋 รายการธุรกรรมทั้งหมด")
-                    # ปรับแต่งตารางให้ดูสวยขึ้นและซ่อนคอลัมน์ที่ไม่จำเป็นในการแสดงผลตรงๆ
-                    st.dataframe(df[['date', 'type', 'category', 'amount', 'note', 'created_by', 'bill_path']], use_container_width=True)
                     
+                    # สร้าง UI แบบการ์ดหรือแถวตารางเพื่อให้กดปุ่มได้ทีละแถว
+                    for _, row in df.iterrows():
+                        with st.container():
+                            col_info, col_edit, col_del = st.columns([6, 1, 1])
+                            
+                            # แสดงข้อมูลของแถวนั้นๆ
+                            bill_indicator = "📎 มีใบเสร็จ" if row['bill_path'] else "❌ ไม่มีใบเสร็จ"
+                            col_info.markdown(f"**[{row['date']}]** **{row['created_by']}** บันทึก **{row['type']}** หมวด **{row['category']}** ยอดเงิน **฿{row['amount']:,.2f}**  \n*โน้ต:* {row['note']} | *({bill_indicator})*")
+                            
+                            # ตรวจสอบสิทธิ์: คนที่บันทึกเท่านั้นถึงจะแก้ได้ ส่วนการลบ คนบันทึกหรือเจ้าของทริปลบได้
+                            if row['created_by'] == user_now:
+                                if col_edit.button("✏️ แก้ไข", key=f"btn_edit_{row['id']}"):
+                                    st.session_state.editing_tx_id = row['id']
+                                    st.rerun()
+                            else:
+                                col_edit.write("") # เว้นว่างไว้หากไม่มีสิทธิ์แก้
+                                
+                            if row['created_by'] == user_now or is_creator:
+                                if col_del.button("🗑️ ลบ", key=f"btn_del_{row['id']}"):
+                                    conn = get_connection()
+                                    # ลบไฟล์รูปในโฟลเดอร์ก่อน (ถ้ามี)
+                                    if row['bill_path'] and os.path.exists(row['bill_path']):
+                                        os.remove(row['bill_path'])
+                                    # ลบข้อมูลใน DB
+                                    conn.cursor().execute('DELETE FROM transactions WHERE id=?', (row['id'],))
+                                    conn.commit()
+                                    conn.close()
+                                    st.success("ลบรายการสำเร็จ!")
+                                    st.rerun()
+                            else:
+                                col_del.write("")
+                        st.write("---")
+
                     # ส่วนเปิดดูรูปใบเสร็จ
                     df_with_bills = df[df['bill_path'].notna() & (df['bill_path'] != "")]
                     if not df_with_bills.empty:
                         st.subheader("🖼️ เปิดดูใบเสร็จที่แนบไว้")
-                        selected_bill = st.selectbox("เลือกรายการที่ต้องการดูใบเสร็จ", 
-                                                    df_with_bills.apply(lambda r: f"ID {r['id']}: {r['category']} - ฿{r['amount']}", axis=1))
+                        selected_bill = st.selectbox("เลือกรายการที่ต้องการดูใบเสร็จ", df_with_bills.apply(lambda r: f"ID {r['id']}: {r['category']} - ฿{r['amount']}", axis=1))
                         if selected_bill:
                             tx_sel_id = selected_bill.split(":")[0].replace("ID ", "")
                             path_to_img = df_with_bills[df_with_bills['id'] == int(tx_sel_id)]['bill_path'].values[0]
@@ -261,7 +326,6 @@ else:
                             send_notification(m_row['username'], f"❌ คุณถูกลบออกจากทริป {sel_trip}")
                             conn.commit(); conn.close(); st.rerun()
                 
-                # ฟังก์ชันเชิญเพื่อนแบบปลอดภัย (พิมพ์ค้นหา)
                 if is_creator:
                     st.divider()
                     st.subheader("✉️ เชิญเพื่อนเข้าทริป")
@@ -292,7 +356,6 @@ else:
                     conn = get_connection(); cur = conn.cursor()
                     cur.execute('INSERT INTO trips(name, budget, created_by, created_at) VALUES (?,?,?,?)', (name, bud, user_now, datetime.now().strftime("%Y-%m-%d")))
                     new_id = cur.lastrowid
-                    # ผูกผู้สร้างเข้ากับทริปในฐานะสมาชิกคนแรก
                     cur.execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (new_id, user_now))
                     conn.commit(); conn.close(); st.success("สร้างทริปสำเร็จ!"); st.rerun()
                 else:
