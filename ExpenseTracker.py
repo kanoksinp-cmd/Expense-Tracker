@@ -1,68 +1,142 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
+import io
 from PIL import Image
 
 # ตั้งค่าหน้าเว็บ
-st.set_page_config(page_title="Trip Expense Splitter Pro", layout="wide")
+st.set_page_config(page_title="Trip Expense Persistent Pro", layout="wide")
 
-# ประกาศตัวแปรเก็บข้อมูลใน Session State
-if "trips" not in st.session_state:
-    st.session_state.trips = {}
+# --- ส่วนของการจัดการฐานข้อมูล SQLite ---
+DB_FILE = "trip_database.db"
 
-st.title("✈️ ระบบจัดการและหารค่าใช้จ่ายสำหรับทริป (Pro Version)")
-st.caption("จัดการรายรับ-รายจ่าย แก้ไข ลบรายการ และแนบรูปภาพหลักฐานสลิป")
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # ให้เข้าถึงข้อมูลด้วยชื่อคอลัมน์ได้
+    return conn
 
-# --- ส่วนที่ 1: การจัดการทริปและสมาชิก (โดย Leader) ---
+def init_db():
+    """สร้างตารางในฐานข้อมูลถ้ายังไม่มี"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # 1. ตารางทริป
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+    ''')
+    # 2. ตารางสมาชิก
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trip_id INTEGER,
+            name TEXT,
+            FOREIGN KEY(trip_id) REFERENCES trips(id),
+            UNIQUE(trip_id, name)
+        )
+    ''')
+    # 3. ตารางค่าใช้จ่าย
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trip_id INTEGER,
+            description TEXT,
+            amount REAL,
+            payer_name TEXT,
+            split_members TEXT, -- เก็บเป็น String คั่นด้วยจุลภาค เช่น "A,B,C"
+            image_blob BLOB,     -- เก็บไฟล์รูปภาพเป็น Binary
+            FOREIGN KEY(trip_id) REFERENCES trips(id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# เรียกใช้งานการสร้างฐานข้อมูลตั้งแต่เปิดแอป
+init_db()
+
+# --- ส่วนติดต่อผู้ใช้ (UI) ---
+st.title("✈️ ระบบจัดการค่าใช้จ่ายทริป (เวอร์ชันบันทึกถาวร)")
+st.caption("ข้อมูลถูกบันทึกลงฐานข้อมูล สามารถปิดแอปและกลับมาค้นหา อัปเดต หรือแก้ไขได้ตลอดเวลา")
+
+# ฟังก์ชันดึงข้อมูลจาก DB มาแสดงใน UI
+conn = get_db_connection()
+
+# ดึงรายชื่อทริปทั้งหมด
+trips_df = pd.read_sql_query("SELECT * FROM trips", conn)
+trip_list = trips_df["name"].tolist() if not trips_df.empty else []
+
+# --- แถบควบคุมด้านซ้าย (Sidebar) ---
 st.sidebar.header("🛠️ ส่วนควบคุมของ Leader")
 
-# 1.1 สร้างทริปใหม่
+# 1. สร้างทริปใหม่
 new_trip = st.sidebar.text_input("➕ สร้างทริปใหม่:").strip()
 if st.sidebar.button("บันทึกทริป"):
-    if new_trip and new_trip not in st.session_state.trips:
-        st.session_state.trips[new_trip] = {"members": [], "expenses": []}
-        st.sidebar.success(f"สร้างทริป '{new_trip}' สำเร็จ!")
-    elif new_trip in st.session_state.trips:
-        st.sidebar.warning("มีชื่อทริปนี้อยู่แล้ว")
+    if new_trip:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO trips (name) VALUES (?)", (new_trip,))
+            conn.commit()
+            st.sidebar.success(f"บันทึกทริป '{new_trip}' ลงฐานข้อมูลสำเร็จ!")
+            st.rerun()
+        except sqlite3.IntegrityError:
+            st.sidebar.warning("❌ มีชื่อทริปนี้อยู่ในประวัติแล้ว")
+    else:
+        st.sidebar.error("กรุณากรอกชื่อทริป")
 
-if not st.session_state.trips:
-    st.info("👋 ยินดีต้อนรับ! กรุณาสร้างทริปแรกที่แถบเครื่องมือด้านซ้ายก่อนครับ")
+if not trip_list:
+    st.info("👋 ยินดีต้อนรับ! กรุณาสร้างทริปแรกที่แถบเครื่องมือด้านซ้ายเพื่อเปิดระบบฐานข้อมูล")
+    conn.close()
     st.stop()
 
-# 1.2 เลือกทริปที่จะจัดการ
-current_trip = st.sidebar.selectbox("🗺️ เลือกทริปที่ต้องการจัดการ:", list(st.session_state.trips.keys()))
+# 2. เลือกทริปจากประวัติที่มีอยู่
+current_trip_name = st.sidebar.selectbox("🗺️ ประวัติทริปทั้งหมดของคุณ:", trip_list)
 
-# 1.3 เพิ่มสมาชิกในทริป
-st.sidebar.subheader(f"👥 สมาชิกใน {current_trip}")
+# ดึง ID ของทริปปัจจุบัน
+trip_id = conn.execute("SELECT id FROM trips WHERE name = ?", (current_trip_name,)).fetchone()["id"]
+
+# 3. การจัดการสมาชิกในทริปนั้นๆ
+st.sidebar.subheader(f"👥 สมาชิกใน {current_trip_name}")
 new_member = st.sidebar.text_input("➕ เพิ่มชื่อผู้ร่วมทริป:").strip()
 if st.sidebar.button("เพิ่มสมาชิก"):
-    if new_member and new_member not in st.session_state.trips[current_trip]["members"]:
-        st.session_state.trips[current_trip]["members"].append(new_member)
-        st.sidebar.success(f"เพิ่มคุณ {new_member} เข้าทริปแล้ว")
-    elif new_member in st.session_state.trips[current_trip]["members"]:
-        st.sidebar.warning("มีชื่อสมาชิกคนนี้อยู่แล้ว")
+    if new_member:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO members (trip_id, name) VALUES (?, ?)", (trip_id, new_member))
+            conn.commit()
+            st.sidebar.success(f"เพิ่มคุณ {new_member} เรียบร้อย")
+            st.rerun()
+        except sqlite3.IntegrityError:
+            st.sidebar.warning("มีสมาชิกชื่อนี้อยู่ในทริปแล้ว")
 
-members = st.session_state.trips[current_trip]["members"]
+# ดึงรายชื่อสมาชิกของทริปปัจจุบัน
+members_rows = conn.execute("SELECT name FROM members WHERE trip_id = ?", (trip_id,)).fetchall()
+members = [row["name"] for row in members_rows]
+
 if members:
     st.sidebar.write(f"**รายชื่อสมาชิก:** " + ", ".join(members))
 else:
     st.sidebar.info("ยังไม่มีสมาชิกในทริปนี้")
 
+# --- ปิดการเชื่อมต่อชั่วคราวเพื่อส่งต่อให้ฟอร์ม ---
+conn.close()
 
-# --- ตรวจสอบสถานะสมาชิกก่อนไปต่อ ---
+
+# --- ตรวจสอบสถานะสมาชิกก่อนอนุญาตให้กรอกบิล ---
 if not members:
-    st.warning("⚠️ กรุณาเพิ่มสมาชิกอย่างน้อย 1 คนก่อนเริ่มใช้งานระบบ")
+    st.warning("⚠️ กรุณาเพิ่มสมาชิกอย่างน้อย 1 คนในแถบด้านซ้ายก่อนเริ่มบันทึกค่าใช้จ่าย")
     st.stop()
 
-tab1, tab2, tab3 = st.tabs(["📝 บันทึกค่าใช้จ่าย", "📊 ตารางสรุป & แก้ไข/ลบ", "💰 วิธีเคลียร์เงิน (Settlement)"])
+tab1, tab2, tab3 = st.tabs(["📝 บันทึกค่าใช้จ่ายใหม่", "📊 ตารางประวัติ สรุปผล & แก้ไข", "💰 วิธีเคลียร์เงิน (Settlement)"])
 
-# --- TAB 1: บันทึกค่าใช้จ่ายใหม่ ---
+# --- TAB 1: บันทึกค่าใช้จ่ายลงฐานข้อมูล ---
 with tab1:
-    st.header(f"➕ เพิ่มรายการค่าใช้จ่าย: {current_trip}")
+    st.header(f"➕ บันทึกรายจ่ายในทริป: {current_trip_name}")
     
     with st.form("expense_form", clear_on_submit=True):
-        description = st.text_input("รายการค่าใช้จ่าย (เช่น ค่าอาหาร, ค่าน้ำมัน):")
+        description = st.text_input("รายการค่าใช้จ่าย:")
         amount = st.number_input("จำนวนเงิน (บาท):", min_value=0.0, step=100.0, format="%.2f")
-        payer = st.selectbox("ใครเป็นคนสำรองจ่ายเงิน?", members, key="add_payer")
+        payer = st.selectbox("ใครเป็นคนสำรองจ่ายเงิน?", members)
         
         st.write("**ใครต้องหารรายการนี้บ้าง?**")
         split_with = []
@@ -70,9 +144,9 @@ with tab1:
             if st.checkbox(member, value=True, key=f"add_split_{member}"):
                 split_with.append(member)
         
-        uploaded_file = st.file_uploader("📸 แนบรูปภาพ/ใบเสร็จ/สลิป (ถ้ามี)", type=["png", "jpg", "jpeg"], key="add_file")
+        uploaded_file = st.file_uploader("📸 แนบรูปสลิป/ใบเสร็จ", type=["png", "jpg", "jpeg"])
         
-        submit_btn = st.form_submit_button("💾 บันทึกรายการ")
+        submit_btn = st.form_submit_button("💾 บันทึกรายการลงฐานข้อมูล")
         
         if submit_btn:
             if not description:
@@ -82,141 +156,164 @@ with tab1:
             elif not split_with:
                 st.error("ต้องมีผู้ร่วมหารอย่างน้อย 1 คน")
             else:
-                # จัดการแปลงไฟล์รูปภาพ
-                img_data = None
+                # แปลงรูปภาพเป็น Byte ไบนารีเพื่อเซฟลง DB
+                blob_data = None
                 if uploaded_file is not None:
-                    img_data = Image.open(uploaded_file)
+                    blob_data = uploaded_file.read()
                 
-                # บันทึกข้อมูล
-                expense_data = {
-                    "รายการ": description,
-                    "จำนวนเงิน": amount,
-                    "คนจ่าย": payer,
-                    "คนหาร": split_with,
-                    "รูปภาพ": img_data
-                }
-                st.session_state.trips[current_trip]["expenses"].append(expense_data)
-                st.success(f"บันทึกรายการ '{description}' เรียบร้อย!")
+                # รวมชื่อคนหารเป็น string แยกด้วยเครื่องหมายจุลภาค (,)
+                split_members_str = ",".join(split_with)
+                
+                # บันทึกเข้า SQLite
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO expenses (trip_id, description, amount, payer_name, split_members, image_blob)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (trip_id, description, amount, payer, split_members_str, blob_data))
+                conn.commit()
+                conn.close()
+                
+                st.success(f"บันทึกข้อมูลและจัดเก็บประวัติรายการ '{description}' สำเร็จ!")
                 st.rerun()
 
-# --- TAB 2: ตารางสรุปและจัดการการแก้ไข/ลบ ---
+# --- ดึงรายการค่าใช้จ่ายจาก DB มาคำนวณใน TAB 2 และ TAB 3 ---
+conn = get_db_connection()
+expenses_rows = conn.execute("SELECT * FROM expenses WHERE trip_id = ?", (trip_id,)).fetchall()
+conn.close()
+
+# ปรับโครงสร้างข้อมูลที่ดึงจาก DB ให้เป็นรูปแบบ List Object เพื่อความสะดวกในการใช้งาน
+expenses_list = []
+for row in expenses_rows:
+    img_data = None
+    if row["image_blob"]:
+        img_data = Image.open(io.BytesIO(row["image_blob"]))
+        
+    expenses_list.append({
+        "id": row["id"],
+        "รายการ": row["description"],
+        "จำนวนเงิน": row["amount"],
+        "คนจ่าย": row["payer_name"],
+        "คนหาร": row["split_members"].split(",") if row["split_members"] else [],
+        "รูปภาพ": img_data
+    })
+
+# --- TAB 2: ตารางประวัติสรุปและอัปเดตข้อมูลย้อนหลัง ---
 with tab2:
-    st.header(f"📊 ตารางสรุปและจัดการข้อมูล: {current_trip}")
-    expenses = st.session_state.trips[current_trip]["expenses"]
+    st.header(f"📋 ประวัติค่าใช้จ่ายทั้งหมดใน: {current_trip_name}")
     
-    if not expenses:
-        st.info("ยังไม่มีการบันทึกค่าใช้จ่ายในทริปนี้")
+    if not expenses_list:
+        st.info("ยังไม่มีข้อมูลค่าใช้จ่ายถูกบันทึกไว้ในประวัติของทริปนี้")
     else:
-        # สรุปยอดเงินรวมของทริปไว้ด้านบนเพื่อความชัดเจน
-        total_trip_amount = sum([exp["จำนวนเงิน"] for exp in expenses])
-        st.metric(label="💰 รวมค่าใช้จ่ายทั้งหมดของทริปนี้", value=f"{total_trip_amount:,.2f} บาท")
+        total_trip_amount = sum([exp["จำนวนเงิน"] for exp in expenses_list])
+        st.metric(label="💰 รวมงบประมาณที่ใช้ไปในทริปนี้ ณ ตอนนี้", value=f"{total_trip_amount:,.2f} บาท")
         st.write("---")
         
-        # วนลูปแสดงผลรายการทีละแถวในรูปแบบตารางที่สามารถจัดการได้ (Interactive List)
-        for index, exp in enumerate(expenses):
-            # ใช้ st.expander เพื่อความสะอาดของหน้าจอ และกดกางออกมาดูรูปหรือแก้ไขได้
-            with st.expander(f"📍 รายการที่ {index+1}: {exp['รายการ']} | 💰 {exp['จำนวนเงิน']:,.2f} บาท (โดย {exp['คนจ่าย']})"):
+        for index, exp in enumerate(expenses_list):
+            with st.expander(f"📌 รายการที่ {index+1}: {exp['รายการ']} | 💵 {exp['จำนวนเงิน']:,.2f} บาท (ออกโดย {exp['คนจ่าย']})"):
                 col_view, col_edit = st.columns([2, 2])
                 
-                # ฝั่งซ้าย: แสดงรายละเอียดปัจจุบันและรูปภาพ
                 with col_view:
-                    st.write(f"**📝 รายการ:** {exp['รายการ']}")
-                    st.write(f"**💵 จำนวนเงิน:** {exp['จำนวนเงิน']:,.2f} บาท")
-                    st.write(f"**👤 ผู้สำรองจ่าย:** {exp['คนจ่าย']}")
-                    st.write(f"**👥 ผู้ร่วมหาร:** {', '.join(exp['คนหาร'])}")
+                    st.write(f"**📝 ชื่อรายการ:** {exp['รายการ']}")
+                    st.write(f"**💵 จำนวนเงินสุทธิ:** {exp['จำนวนเงิน']:,.2f} บาท")
+                    st.write(f"**👤 ผู้สำรองเงิน:** {exp['คนจ่าย']}")
+                    st.write(f"**👥 สมาชิกที่ร่วมหารบิล:** {', '.join(exp['คนหาร'])}")
                     
                     if exp["รูปภาพ"] is not None:
-                        st.image(exp["รูปภาพ"], caption=f"หลักฐานของ: {exp['รายการ']}", width=300)
+                        st.image(exp["รูปภาพ"], caption="หลักฐานการจ่ายเงินในระบบ", width=300)
                     else:
-                        st.caption("🈚 ไม่มีรูปภาพแนบในรายการนี้")
-                
-                # ฝั่งขวา: ฟอร์มสำหรับ แก้ไข หรือ ลบ รายการนี้
+                        st.caption("🈚 ไม่มีสลิปแนบอยู่")
+                        
                 with col_edit:
-                    st.markdown("### ✏️ แก้ไขข้อมูล / 🗑️ ลบรายการ")
+                    st.markdown("#### ✏️ อัปเดตข้อมูล / 🗑️ ลบรายการออกฐานข้อมูล")
+                    edit_desc = st.text_input("แก้ไขชื่อรายการ:", value=exp['รายการ'], key=f"ed_desc_{exp['id']}")
+                    edit_amount = st.number_input("แก้ไขจำนวนเงิน (บาท):", min_value=0.0, value=float(exp['จำนวนเงิน']), format="%.2f", key=f"ed_amount_{exp['id']}")
                     
-                    edit_desc = st.text_input("แก้ไขชื่อรายการ:", value=exp['รายการ'], key=f"edit_desc_{index}")
-                    edit_amount = st.number_input("แก้ไขจำนวนเงิน (บาท):", min_value=0.0, value=float(exp['จำนวนเงิน']), format="%.2f", key=f"edit_amount_{index}")
-                    
-                    # ค้นหาตำแหน่ง Index เดิมของคนจ่ายเพื่อแสดงเป็น Default
                     default_payer_idx = members.index(exp['คนจ่าย']) if exp['คนจ่าย'] in members else 0
-                    edit_payer = st.selectbox("แก้ไขคนสำรองจ่าย:", members, index=default_payer_idx, key=f"edit_payer_{index}")
+                    edit_payer = st.selectbox("แก้ไขคนสำรองจ่าย:", members, index=default_payer_idx, key=f"ed_payer_{exp['id']}")
                     
-                    st.write("แก้ไขคนร่วมหาร:")
+                    st.write("แก้ไขผู้ร่วมหาร:")
                     edit_split_with = []
                     for member in members:
-                        # เช็คว่าเดิมทีคนนี้ร่วมหารไหม
                         is_checked = member in exp['คนหาร']
-                        if st.checkbox(member, value=is_checked, key=f"edit_split_{member}_{index}"):
+                        if st.checkbox(member, value=is_checked, key=f"ed_split_{member}_{exp['id']}"):
                             edit_split_with.append(member)
+                            
+                    edit_file = st.file_uploader("🔄 เปลี่ยนรูปภาพสลิปใหม่", type=["png", "jpg", "jpeg"], key=f"ed_file_{exp['id']}")
                     
-                    edit_file = st.file_uploader("🔄 เปลี่ยนรูปภาพหลักฐาน", type=["png", "jpg", "jpeg"], key=f"edit_file_{index}")
-                    
-                    # ปุ่มดำเนินการ
                     btn_col1, btn_col2 = st.columns(2)
-                    
                     with btn_col1:
-                        if st.button("💾 บันทึกการแก้ไข", key=f"save_btn_{index}", type="primary"):
-                            if not edit_desc:
-                                st.error("กรุณากรอกชื่อรายการ")
-                            elif edit_amount <= 0:
-                                st.error("จำนวนเงินต้องมากกว่า 0")
-                            elif not edit_split_with:
-                                st.error("ต้องมีคนร่วมหารอย่างน้อย 1 คน")
+                        if st.button("💾 บันทึกและอัปเดต", key=f"save_ed_{exp['id']}", type="primary"):
+                            if not edit_desc or edit_amount <= 0 or not edit_split_with:
+                                st.error("กรุณากรอกข้อมูลให้ครบถ้วนและถูกต้อง")
                             else:
-                                # อัปเดตข้อมูลในสเตต
-                                expenses[index]["รายการ"] = edit_desc
-                                expenses[index]["จำนวนเงิน"] = edit_amount
-                                expenses[index]["คนจ่าย"] = edit_payer
-                                expenses[index]["คนหาร"] = edit_split_with
-                                if edit_file is not None:
-                                    expenses[index]["รูปภาพ"] = Image.open(edit_file)
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                split_str = ",".join(edit_split_with)
                                 
-                                st.success("อัปเดตข้อมูลเรียบร้อย!")
+                                # ตรวจเช็คว่ามีการเปลี่ยนรูปสลิปไหม
+                                if edit_file is not None:
+                                    new_blob = edit_file.read()
+                                    cursor.execute('''
+                                        UPDATE expenses 
+                                        SET description=?, amount=?, payer_name=?, split_members=?, image_blob=? 
+                                        WHERE id=?
+                                    ''', (edit_desc, edit_amount, edit_payer, split_str, new_blob, exp['id']))
+                                else:
+                                    cursor.execute('''
+                                        UPDATE expenses 
+                                        SET description=?, amount=?, payer_name=?, split_members=? 
+                                        WHERE id=?
+                                    ''', (edit_desc, edit_amount, edit_payer, split_str, exp['id']))
+                                conn.commit()
+                                conn.close()
+                                st.success("อัปเดตประวัติฐานข้อมูลแล้ว!")
                                 st.rerun()
                                 
                     with btn_col2:
-                        if st.button("🗑️ ลบรายการนี้", key=f"del_btn_{index}"):
-                            # ลบรายการออกจาก List
-                            st.session_state.trips[current_trip]["expenses"].pop(index)
-                            st.warning("ลบรายการสำเร็จ!")
+                        if st.button("🗑️ ลบจากฐานข้อมูล", key=f"del_ed_{exp['id']}"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM expenses WHERE id=?", (exp['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.warning("ลบรายการออกจากประวัติถาวรแล้ว")
                             st.rerun()
 
 # --- TAB 3: สรุปวิธีเคลียร์เงิน (Settlement) ---
 with tab3:
-    st.header("🤝 สรุปขั้นตอนการโอนเงินคืน")
-    expenses = st.session_state.trips[current_trip]["expenses"]
+    st.header("🤝 คำนวณสรุปยอดบิลโอนเงิน")
     
-    if not expenses:
-        st.info("บันทึกค่าใช้จ่ายก่อน ระบบจึงจะคำนวณการเคลียร์เงินให้")
+    if not expenses_list:
+        st.info("เมื่อมีการบันทึกค่าใช้จ่ายในประวัติ ระบบจะแสดงขั้นตอนการโอนเงินที่สั้นที่สุดให้ทันที")
     else:
-        # ส่วนคำนวณ Net Balance
         net_balances = {member: 0.0 for member in members}
         
-        for exp in expenses:
+        for exp in expenses_list:
             payer = exp["คนจ่าย"]
             amount = exp["จำนวนเงิน"]
             split_with = exp["คนหาร"]
             
-            net_balances[payer] += amount
+            if payer in net_balances:
+                net_balances[payer] += amount
+            
             share = amount / len(split_with) if split_with else 0
             for member in split_with:
-                net_balances[member] -= share
-        
+                if member in net_balances:
+                    net_balances[member] -= share
+                    
         col1, col2 = st.columns(2)
         with col1:
             st.write("**🟢 คนที่ต้องได้เงินคืน:**")
             for member, bal in net_balances.items():
-                if bal > 0.01:
-                    st.write(f"👤 **{member}** ได้รับคืน: `{bal:,.2f}` บาท")
-        
+                if bal > 0.01: st.write(f"👤 **{member}** ได้รับคืน: `{bal:,.2f}` บาท")
         with col2:
             st.write("**🔴 คนที่ต้องจ่ายเพิ่ม:**")
             for member, bal in net_balances.items():
-                if bal < -0.01:
-                    st.write(f"👤 **{member}** ต้องจ่ายเพิ่ม: `{abs(bal):,.2f}` บาท")
-        
+                if bal < -0.01: st.write(f"👤 **{member}** ต้องจ่ายเพิ่ม: `{abs(bal):,.2f}` บาท")
+                
         st.write("---")
-        st.subheader("🚀 วิธีโอนเงินเพื่อให้เคลียร์จบเร็วที่สุด")
+        st.subheader("🚀 แผนภาพขั้นตอนการโอนเงิน")
         
         debtors = [[m, bal] for m, bal in net_balances.items() if bal < -0.01]
         creditors = [[m, bal] for m, bal in net_balances.items() if bal > 0.01]
@@ -227,16 +324,15 @@ with tab3:
             creditor_name, creditor_bal = creditors[0]
             
             amount_to_pay = min(abs(debtor_bal), creditor_bal)
-            transactions.append(f"💳 **{debtor_name}** โอนเงินให้ 👉 **{creditor_name}** เป็นจำนวนยอด **`{amount_to_pay:,.2f}`** บาท")
+            transactions.append(f"💳 **{debtor_name}** โอนเงินให้ 👉 **{creditor_name}** ยอดรวม **`{amount_to_pay:,.2f}`** บาท")
             
             debtors[0][1] += amount_to_pay
             creditors[0][1] -= amount_to_pay
-            
             if abs(debtors[0][1]) < 0.01: debtors.pop(0)
             if abs(creditors[0][1]) < 0.01: creditors.pop(0)
-                
+            
         if transactions:
             for tx in transactions:
                 st.info(tx)
         else:
-            st.success("🎉 ยอดเงินลงตัวทั้งหมดแล้ว ไม่มีใครค้างใครค๊าบ!")
+            st.success("🎉 ทุกทริปเครียร์จบเรียบร้อย ไม่มีหนี้ค้างส่งต่อ!")
