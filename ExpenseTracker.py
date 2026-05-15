@@ -7,58 +7,62 @@ from PIL import Image
 # 1. ตั้งค่าหน้าจอ
 st.set_page_config(page_title="Trip Expense Splitter Pro", layout="wide")
 
-# ==========================================
-# 🎨 เพิ่มระบบจัดการธีม (5 แบบ)
-# ==========================================
-THEMES = {
-    "🌐 Modern Dark Blue (สุขุม ทันสมัย)": {
-        "primary": "#1E88E5", "bg_sidebar": "#0E1117", "bg_card": "#1E2530", "text": "#FFFFFF", "accent": "#00E676"
+# --- เพิ่มระบบตั้งค่าธีม (5 แบบ) ---
+st.sidebar.header("🎨 ตั้งค่าสไตล์ & ธีม")
+theme_choice = st.sidebar.selectbox(
+    "เลือกธีมสีที่ชอบ:",
+    ["Default Light", "Ocean Breeze (ฟ้าน้ำทะเล)", "Forest Trek (เขียวป่าไม้)", "Sunset Glow (อบอุ่นพาสเทล)", "Midnight Luxury (มืดหรูหรา)"]
+)
+
+# ดิกชันนารีเก็บโค้ดสี CSS สำหรับแต่ละธีม
+themes = {
+    "Default Light": {
+        "bg": "#ffffff", "sidebar_bg": "#f8f9fa", "text": "#31333F", "card_bg": "#f0f2f6", "accent": "#ff4b4b"
     },
-    "🌿 Pastel Forest (ธรรมชาติ พาสเทล)": {
-        "primary": "#4CAF50", "bg_sidebar": "#F1F8E9", "bg_card": "#FFFFFF", "text": "#2E7D32", "accent": "#81C784"
+    "Ocean Breeze (ฟ้าน้ำทะเล)": {
+        "bg": "#f0f8ff", "sidebar_bg": "#e6f2ff", "text": "#0b2545", "card_bg": "#ffffff", "accent": "#134074"
     },
-    "🏖️ Ocean Breeze (สดใส ทะเลหน้าร้อน)": {
-        "primary": "#00ACC1", "bg_sidebar": "#E0F7FA", "bg_card": "#FFFFFF", "text": "#006064", "accent": "#FFB74D"
+    "Forest Trek (เขียวป่าไม้)": {
+        "bg": "#f4f7f5", "sidebar_bg": "#e1ebd9", "text": "#1c3124", "card_bg": "#ffffff", "accent": "#46694c"
     },
-    "🥞 Warm Caramel (คาเฟ่ มินิมอล อบอุ่น)": {
-        "primary": "#D84315", "bg_sidebar": "#FFE0B2", "bg_card": "#FFFFFF", "text": "#4E342E", "accent": "#FFB74D"
+    "Sunset Glow (อบอุ่นพาสเทล)": {
+        "bg": "#fff5f0", "sidebar_bg": "#ffeae0", "text": "#4a2c2a", "card_bg": "#ffffff", "accent": "#de6b48"
     },
-    "🍇 Cyber Neon (จี๊ดจ๊าด สายปาร์ตี้กลางคืน)": {
-        "primary": "#E040FB", "bg_sidebar": "#12005e", "bg_card": "#1c0066", "text": "#FFFFFF", "accent": "#00E5FF"
+    "Midnight Luxury (มืดหรูหรา)": {
+        "bg": "#0e1117", "sidebar_bg": "#1a1c23", "text": "#ffffff", "card_bg": "#262730", "accent": "#ff4b4b"
     }
 }
 
-# ส่วนเลือกธีมบน Sidebar (วางไว้บนสุด)
-st.sidebar.header("🎨 ปรับแต่งหน้าตาแอป")
-selected_theme_name = st.sidebar.selectbox("เลือกธีมที่ชอบ:", list(THEMES.keys()))
-theme = THEMES[selected_theme_name]
+selected_theme = themes[theme_choice]
 
-# ฝัง CSS เพื่อเปลี่ยนสไตล์ตามธีมที่เลือก
-custom_css = f"""
-<style>
-    /* เปลี่ยนสีปุ่มหลัก Primary Button */
-    div.stButton > button[kind="primary"] {{
-        background-color: {theme['primary']} !important;
-        color: white !important;
-        border: none !important;
-    }}
-    /* เปลี่ยนสีกรอบ Expander และ Card ส่วนประวัติ */
-    .stAlert, div[data-testid="stExpander"] {{
-        border-left: 5px solid {theme['primary']} !important;
-        background-color: {theme['bg_card']} !important;
-    }}
-    /* ปรับแต่งความสวยงามเพิ่มเติม */
-    h1, h2, h3 {{
-        color: {theme['primary']} !important;
-    }}
-</style>
-"""
-st.markdown(custom_css, unsafe_allow_html=True)
-st.sidebar.markdown("---")
+# Inject CSS เพื่อเปลี่ยนสีพื้นหลังและองค์ประกอบหลัก
+st.markdown(f"""
+    <style>
+        /* พื้นหลังหน้าหลัก */
+        .stApp {{
+            background-color: {selected_theme['bg']};
+            color: {selected_theme['text']};
+        }}
+        /* พื้นหลัง Sidebar */
+        [data-testid="stSidebar"] {{
+            background-color: {selected_theme['sidebar_bg']};
+        }}
+        /* กล่องข้อความ/การ์ด/Expander */
+        .st-emotion-cache-12w0qpk, .st-emotion-cache-vh6w22, div[data-testid="stExpander"] {{
+            background-color: {selected_theme['card_bg']} !important;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0px 2px 5px rgba(0,0,0,0.05);
+        }}
+        /* เปลี่ยนสีตัวอักษรบางส่วนให้เข้ากับธีม */
+        h1, h2, h3, p, span, label {{
+            color: {selected_theme['text']} !important;
+        }}
+    </style>
+""", unsafe_allow_html=True)
 
-# ==========================================
-# 2. ฟังก์ชันจัดการฐานข้อมูล (เหมือนเดิม)
-# ==========================================
+
+# 2. ฟังก์ชันจัดการฐานข้อมูล
 DB_FILE = "trip_database.db"
 
 def get_db_connection():
@@ -114,6 +118,7 @@ def compress_image(uploaded_file):
 init_db()
 
 # --- 3. Sidebar: ศูนย์ควบคุม ---
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ ระบบจัดการข้อมูล")
 
 # 3.1 ลงทะเบียน User
@@ -227,7 +232,7 @@ with tab1:
         
         file = st.file_uploader("สลิป:", type=['jpg','png','jpeg'])
         
-        if st.form_submit_button("💾 บันทึกรายการ", type="primary"): # เปลี่ยนประเภทเพื่อรองรับธีม
+        if st.form_submit_button("💾 บันทึกรายการ"):
             if desc and amt > 0 and split_to:
                 blob = compress_image(file)
                 conn = get_db_connection()
@@ -275,7 +280,7 @@ with tab2:
                         
                         u_file = st.file_uploader("อัปเดตรูปสลิป:", type=['jpg','png','jpeg'], key=f"edit_img_{row['id']}")
                         
-                        submit_btn = st.form_submit_button("💾 อัปเดตการแก้ไข", type="primary") # เปลี่ยนประเภทเพื่อรองรับธีม
+                        submit_btn = st.form_submit_button("💾 อัปเดตการแก้ไข")
                         
                         if submit_btn:
                             if u_desc and u_amt > 0 and u_split_to:
@@ -321,7 +326,7 @@ with tab3:
         net_balances = {m: 0.0 for m in existing_members}
         for row in expenses_rows:
             p, a, s_str = row['payer_name'], row['amount'], row['split_members']
-            if not s_str:  
+            if not s_str: 
                 continue
             s_list = s_str.split(",")
             net_balances[p] += a
