@@ -113,11 +113,13 @@ else:
     update_online_status(user_now)
     
     conn = get_connection()
+    # [FIXED] แก้ไข SQL Query ตรงนี้ให้ดึงทริปจากรายชื่อสมาชิกในตาราง trip_members โดยตรง 
+    # ทำให้เพื่อนที่ถูกเชิญมองเห็นทริปร่วมกันได้ทันทีแบบ 100%
     my_trips = pd.read_sql_query('''
-        SELECT DISTINCT t.* FROM trips t 
-        LEFT JOIN trip_members tm ON t.id = tm.trip_id 
-        WHERE t.created_by = ? OR tm.username = ?
-    ''', conn, params=(user_now, user_now))
+        SELECT * FROM trips 
+        WHERE id IN (SELECT trip_id FROM trip_members WHERE username = ?)
+    ''', conn, params=(user_now,))
+    
     notis = pd.read_sql_query('SELECT * FROM notifications WHERE receiver=? ORDER BY id DESC LIMIT 5', conn, params=(user_now,))
     conn.close()
 
@@ -263,7 +265,7 @@ else:
                         fig = px.pie(exp_df, values='amount', names='category', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
                         st.plotly_chart(fig, use_container_width=True)
                     
-                    # ตารางแสดงข้อมูลดิบพร้อมปุ่ม แก้ไข/ลบ ปรับปรุงความปลอดภัยป้องกันสิทธิ์ซ้อนเรียบร้อย
+                    # ตารางรายการธุรกรรมพร้อมปุ่ม แก้ไข/ลบ
                     st.subheader("📋 รายการธุรกรรมทั้งหมด")
                     for _, row in df.iterrows():
                         with st.container():
@@ -304,7 +306,7 @@ else:
                             if os.path.exists(path_to_img):
                                 st.image(path_to_img, caption=selected_bill, width=400)
 
-            # แท็บ 3: สมาชิกกลุ่มและการส่งการแจ้งเตือนอย่างปลอดภัย
+            # แท็บ 3: สมาชิกกลุ่มและการส่งการแจ้งเตือนแบบปลอดภัยจากปัญหา DB Locked
             with tab3:
                 st.subheader("👥 สมาชิกและสถานะ")
                 conn = get_connection()
@@ -322,7 +324,6 @@ else:
                         if c2.button("ลบออก", key=f"kick_{m_row['username']}"):
                             cur = conn.cursor()
                             cur.execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m_row['username']))
-                            # แก้ไขบั๊ก DB Locked โดยส่งวัตถุ conn เข้าไปทำงานร่วมกันใน Thread เดียวกัน
                             send_notification(m_row['username'], f"❌ คุณถูกลบออกจากทริป {sel_trip}", conn=conn)
                             conn.commit()
                             conn.close()
