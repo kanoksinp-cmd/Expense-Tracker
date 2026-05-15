@@ -30,7 +30,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS notifications 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)''')
     
-    # Migration
+    # Migration: ตรวจสอบคอลัมน์ที่อาจตกหล่นจากเวอร์ชันเก่า
     cols = [('users', 'last_active', 'TEXT'), ('transactions', 'created_by', 'TEXT'), ('transactions', 'bill_path', 'TEXT')]
     for table, col, col_type in cols:
         try:
@@ -65,16 +65,10 @@ def get_status_icon(last_active_str):
     return "⚪ ออฟไลน์"
 
 def send_notification(receiver, msg, conn=None):
-    # ถ้ามีการส่ง Connection มาจากฟังก์ชันแม่ ให้ใช้ตัวนั้นเลย ไม่ต้องเปิดใหม่
+    # ป้องกัน DB Locked โดยการเลือกใช้ Connection ที่ถูกส่งมาจากฟังก์ชันแม่ (ถ้ามี)
     local_conn = conn if conn else get_connection()
     now = datetime.now().strftime("%H:%M")
-    
-    local_conn.cursor().execute(
-        'INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', 
-        (receiver, msg, now)
-    )
-    
-    # ถ้าสร้าง Connection เองในนี้ ค่อยทำ Commit และ Close
+    local_conn.cursor().execute('INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', (receiver, msg, now))
     if not conn:
         local_conn.commit()
         local_conn.close()
@@ -85,7 +79,7 @@ st.set_page_config(page_title="Trip Expense Master", layout="wide")
 if 'username' not in st.session_state:
     st.session_state.username = None
 if 'editing_tx_id' not in st.session_state:
-    st.session_state.editing_tx_id = None  # เก็บ ID ของรายการที่กำลังแก้ไข
+    st.session_state.editing_tx_id = None
 
 if not st.session_state.username:
     st.title("💰 Trip Expense Tracker")
@@ -158,6 +152,7 @@ else:
 
             tab1, tab2, tab3 = st.tabs(["📝 รายจ่าย", "📊 สรุปและวิเคราะห์", "👥 สมาชิก"])
 
+            # แท็บ 1: บันทึกข้อมูล
             with tab1:
                 st.subheader("บันทึกรายรับ-รายจ่าย")
                 with st.form("exp_form", clear_on_submit=True):
@@ -185,17 +180,16 @@ else:
                                     f.write(uploaded_file.getbuffer())
                                 cur.execute('UPDATE transactions SET bill_path=? WHERE id=?', (bill_path, tx_id))
                             
-# แก้ไขใน Tab 1 ตรงลูปส่งแจ้งเตือนเพื่อน
-m_list = cur.execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
-for m in m_list:
-    # เพิ่ม conn=conn เข้าไปท้ายฟังก์ชันแบบนี้
-    send_notification(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}", conn=conn)
+                            m_list = cur.execute('SELECT username FROM trip_members WHERE trip_id=? AND username!=?', (t_id, user_now)).fetchall()
+                            for m in m_list:
+                                send_notification(m[0], f"💰 {user_now} เพิ่ม {ttype} {cat} ฿{amt:,.2f} ในทริป {sel_trip}", conn=conn)
                             
                             conn.commit()
                             conn.close()
                             st.success("บันทึกรายจ่ายสำเร็จ!")
                             st.rerun()
 
+            # แท็บ 2: สรุป วิเคราะห์ และแก้ไขรายการ
             with tab2:
                 conn = get_connection()
                 df = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id=?', conn, params=(t_id,))
@@ -220,7 +214,7 @@ for m in m_list:
                     
                     st.divider()
                     
-                    # --- ส่วนของฟอร์มแก้ไขข้อมูล (จะแสดงเมื่อมีการกดปุ่มแก้ไขเท่านั้น) ---
+                    # กล่องฟอร์มแก้ไขข้อมูล
                     if st.session_state.editing_tx_id is not None:
                         st.info("🛠️ กำลังแก้ไขรายการ")
                         conn = get_connection()
@@ -228,7 +222,6 @@ for m in m_list:
                         conn.close()
                         
                         if tx_data:
-                            # ดึงข้อมูลเก่ามาใส่ในช่องกรอกข้อมูลเดิม
                             with st.expander("📝 ฟอร์มแก้ไขรายการ บันทึกโดย " + tx_data[7], expanded=True):
                                 with st.form("edit_form"):
                                     edit_type = st.selectbox("แก้ไขประเภท", ["รายจ่าย", "รายรับ"], index=0 if tx_data[2] == "รายจ่าย" else 1)
@@ -242,7 +235,6 @@ for m in m_list:
                                         conn = get_connection()
                                         cur = conn.cursor()
                                         
-                                        # จัดการรูปภาพกรณีอัปโหลดใหม่
                                         current_bill_path = tx_data[6]
                                         if edit_file is not None:
                                             file_ext = edit_file.name.split(".")[-1]
@@ -255,7 +247,7 @@ for m in m_list:
                                                        WHERE id=?''', (edit_type, edit_cat, edit_amt, edit_note, current_bill_path, st.session_state.editing_tx_id))
                                         conn.commit()
                                         conn.close()
-                                        st.session_state.editing_tx_id = None # รีเซ็ตสถานะหลังบันทึก
+                                        st.session_state.editing_tx_id = None
                                         st.success("อัปเดตรายการเรียบร้อยแล้ว!")
                                         st.rerun()
                                         
@@ -271,33 +263,27 @@ for m in m_list:
                         fig = px.pie(exp_df, values='amount', names='category', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
                         st.plotly_chart(fig, use_container_width=True)
                     
-                    # --- รายการธุรกรรมพร้อมปุ่มแก้ไข/ลบ ---
+                    # ตารางแสดงข้อมูลดิบพร้อมปุ่ม แก้ไข/ลบ ปรับปรุงความปลอดภัยป้องกันสิทธิ์ซ้อนเรียบร้อย
                     st.subheader("📋 รายการธุรกรรมทั้งหมด")
-                    
-                    # สร้าง UI แบบการ์ดหรือแถวตารางเพื่อให้กดปุ่มได้ทีละแถว
                     for _, row in df.iterrows():
                         with st.container():
                             col_info, col_edit, col_del = st.columns([6, 1, 1])
-                            
-                            # แสดงข้อมูลของแถวนั้นๆ
                             bill_indicator = "📎 มีใบเสร็จ" if row['bill_path'] else "❌ ไม่มีใบเสร็จ"
                             col_info.markdown(f"**[{row['date']}]** **{row['created_by']}** บันทึก **{row['type']}** หมวด **{row['category']}** ยอดเงิน **฿{row['amount']:,.2f}**  \n*โน้ต:* {row['note']} | *({bill_indicator})*")
                             
-                            # ตรวจสอบสิทธิ์: คนที่บันทึกเท่านั้นถึงจะแก้ได้ ส่วนการลบ คนบันทึกหรือเจ้าของทริปลบได้
                             if row['created_by'] == user_now:
                                 if col_edit.button("✏️ แก้ไข", key=f"btn_edit_{row['id']}"):
                                     st.session_state.editing_tx_id = row['id']
                                     st.rerun()
                             else:
-                                col_edit.write("") # เว้นว่างไว้หากไม่มีสิทธิ์แก้
+                                col_edit.write("")
                                 
                             if row['created_by'] == user_now or is_creator:
                                 if col_del.button("🗑️ ลบ", key=f"btn_del_{row['id']}"):
                                     conn = get_connection()
-                                    # ลบไฟล์รูปในโฟลเดอร์ก่อน (ถ้ามี)
                                     if row['bill_path'] and os.path.exists(row['bill_path']):
-                                        os.remove(row['bill_path'])
-                                    # ลบข้อมูลใน DB
+                                        try: os.remove(row['bill_path'])
+                                        except: pass
                                     conn.cursor().execute('DELETE FROM transactions WHERE id=?', (row['id'],))
                                     conn.commit()
                                     conn.close()
@@ -307,7 +293,7 @@ for m in m_list:
                                 col_del.write("")
                         st.write("---")
 
-                    # ส่วนเปิดดูรูปใบเสร็จ
+                    # ตรวจสอบรูปใบเสร็จ
                     df_with_bills = df[df['bill_path'].notna() & (df['bill_path'] != "")]
                     if not df_with_bills.empty:
                         st.subheader("🖼️ เปิดดูใบเสร็จที่แนบไว้")
@@ -318,7 +304,8 @@ for m in m_list:
                             if os.path.exists(path_to_img):
                                 st.image(path_to_img, caption=selected_bill, width=400)
 
-with tab3:
+            # แท็บ 3: สมาชิกกลุ่มและการส่งการแจ้งเตือนอย่างปลอดภัย
+            with tab3:
                 st.subheader("👥 สมาชิกและสถานะ")
                 conn = get_connection()
                 members = pd.read_sql_query('''
@@ -334,14 +321,12 @@ with tab3:
                     if is_creator and m_row['username'] != user_now:
                         if c2.button("ลบออก", key=f"kick_{m_row['username']}"):
                             cur = conn.cursor()
-                            # 1. ลบสมาชิกออกจากทริป
                             cur.execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m_row['username']))
-                            # 2. ส่งแจ้งเตือนโดยใช้ conn ตัวเดียวกัน (ส่งเป็นก้อนเดียวกันป้องกัน DB Locked)
+                            # แก้ไขบั๊ก DB Locked โดยส่งวัตถุ conn เข้าไปทำงานร่วมกันใน Thread เดียวกัน
                             send_notification(m_row['username'], f"❌ คุณถูกลบออกจากทริป {sel_trip}", conn=conn)
-                            
                             conn.commit()
                             conn.close()
-                            st.success("ลบรายการสำเร็จ!")
+                            st.success("ลบสมาชิกสำเร็จ!")
                             st.rerun()
                 
                 if is_creator:
@@ -360,13 +345,10 @@ with tab3:
                         else:
                             if st.button(f"ส่งคำเชิญให้ {search_user}"):
                                 cur.execute('INSERT INTO trip_members(trip_id, username) VALUES (?,?)', (t_id, search_user))
-                                # ส่งแจ้งเตือนพ่วงไปด้วยเลย
                                 send_notification(search_user, f"✉️ {user_now} เชิญคุณเข้าร่วมทริป '{sel_trip}'", conn=conn)
                                 conn.commit()
                                 conn.close()
                                 st.success(f"เพิ่ม {search_user} เข้าทริปสำเร็จ!"); st.rerun()
-                
-                # หากไม่มีการกดปุ่มใดๆ ให้ทำการปิด Connection ตามปกติหลังจบแท็บ
                 try:
                     conn.close()
                 except:
