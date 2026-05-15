@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timedelta
 import plotly.express as px
 
-# --- 1. ตั้งค่าฐานข้อมูลและ Migration ---
+# --- 1. ตั้งค่าฐานข้อมูลและโฟลเดอร์ ---
 DB_FILE = 'expense_tracker.db'
 BILL_DIR = "bills"
 
@@ -19,21 +19,16 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         c = conn.cursor()
-        c.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, profile_pic TEXT, last_active TEXT)')
+        c.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, last_active TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS trips (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, budget REAL, created_by TEXT, created_at TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS trip_members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, username TEXT, status TEXT DEFAULT "accepted")')
         c.execute('CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type TEXT, category TEXT, amount REAL, note TEXT, bill_path TEXT, created_by TEXT, trip_id INTEGER)')
         c.execute('CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)')
-        
-        try:
-            c.execute('SELECT status FROM trip_members LIMIT 1')
-        except sqlite3.OperationalError:
-            c.execute('ALTER TABLE trip_members ADD COLUMN status TEXT DEFAULT "accepted"')
         conn.commit()
 
 init_db()
 
-# --- 2. ฟังก์ชันเสริมและ Callbacks ---
+# --- 2. ฟังก์ชันเสริม ---
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -57,32 +52,13 @@ def send_notification(receiver, msg, conn=None):
     local_conn = conn if conn else get_connection()
     now = datetime.now().strftime("%H:%M")
     local_conn.cursor().execute('INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', (receiver, msg, now))
-    if not conn:
-        local_conn.commit()
-
-def accept_trip_callback(row_id, trip_name, creator, username):
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute('UPDATE trip_members SET status="accepted" WHERE id=?', (row_id,))
-        send_notification(creator, f"🤝 {username} ตอบรับเข้าร่วมทริป '{trip_name}' แล้ว!", conn=conn)
-        conn.commit()
-    st.session_state.menu_selection = "🧳 ทริปของฉัน"
-    st.session_state.current_trip_name = trip_name
-    st.toast(f"เข้าสู่ทริป {trip_name} แล้ว!", icon="✅")
-
-def reject_trip_callback(row_id, trip_name, creator, username):
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute('DELETE FROM trip_members WHERE id=?', (row_id,))
-        send_notification(creator, f"👎 {username} ปฏิเสธทริป '{trip_name}'", conn=conn)
-        conn.commit()
-    st.toast("ปฏิเสธคำเชิญแล้ว")
+    if not conn: local_conn.commit()
 
 # --- 3. UI ระบบ Login ---
 st.set_page_config(page_title="Trip Expense Master", layout="wide")
 
 if 'username' not in st.session_state: st.session_state.username = None
-if 'menu_selection' not in st.session_state: st.session_state.menu_selection = "🔔 แจ้งเตือน"
+if 'menu_selection' not in st.session_state: st.session_state.menu_selection = "🧳 ทริปของฉัน"
 if 'current_trip_name' not in st.session_state: st.session_state.current_trip_name = None
 
 if not st.session_state.username:
@@ -112,63 +88,29 @@ if not st.session_state.username:
 
 else:
     user_now = st.session_state.username
-    update_online_status(user_now) # อัปเดตสถานะออนไลน์ตลอดเวลา
+    update_online_status(user_now)
     
-    # ดึงข้อมูลที่จำเป็น
     with get_connection() as conn:
-        pending_trips = pd.read_sql_query('''
-            SELECT tm.id as member_row_id, t.name, t.created_by, t.budget 
-            FROM trip_members tm JOIN trips t ON tm.trip_id = t.id
-            WHERE tm.username = ? AND tm.status = 'pending'
-        ''', conn, params=(user_now,))
-        
-        notis = pd.read_sql_query('SELECT * FROM notifications WHERE receiver=? ORDER BY id DESC LIMIT 10', conn, params=(user_now,))
-        
+        # ดึงเฉพาะทริปที่เข้าร่วมแล้ว (ซึ่งเวอร์ชันนี้จะเข้าร่วมทันทีที่โดนดึง)
         my_trips = pd.read_sql_query('''
             SELECT * FROM trips WHERE id IN (SELECT trip_id FROM trip_members WHERE username=? AND status='accepted')
         ''', conn, params=(user_now,))
+        notis = pd.read_sql_query('SELECT * FROM notifications WHERE receiver=? ORDER BY id DESC LIMIT 10', conn, params=(user_now,))
 
     # Sidebar
     st.sidebar.title(f"👤 {user_now}")
-    total_alerts = len(pending_trips)
-    noti_label = f"🔔 แจ้งเตือน ({total_alerts})" if total_alerts > 0 else "🔔 แจ้งเตือน"
-    
-    menu_list = [noti_label, "🧳 ทริปของฉัน", "➕ สร้างทริปใหม่"]
-    
-    current_idx = 0
-    if st.session_state.menu_selection == "🧳 ทริปของฉัน": current_idx = 1
-    elif st.session_state.menu_selection == "➕ สร้างทริปใหม่": current_idx = 2
-
-    menu = st.sidebar.radio("เมนู", menu_list, index=current_idx)
-    st.session_state.menu_selection = menu.split(" (")[0]
+    menu_list = ["🧳 ทริปของฉัน", "🔔 แจ้งเตือน", "➕ สร้างทริปใหม่"]
+    menu = st.sidebar.radio("เมนู", menu_list, index=menu_list.index(st.session_state.menu_selection))
+    st.session_state.menu_selection = menu
 
     if st.sidebar.button("Log out"):
         st.session_state.username = None
         st.rerun()
 
-    # --- หน้าแจ้งเตือน ---
-    if "🔔" in menu:
-        st.header("🔔 การแจ้งเตือนและคำเชิญทริป")
-        
-        if not pending_trips.empty:
-            st.subheader("✉️ คำเชิญที่รอการตอบรับ")
-            for _, p in pending_trips.iterrows():
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([5, 2, 1.5])
-                    c1.markdown(f"**{p['created_by']}** เชิญคุณเข้าทริป **'{p['name']}'** (งบ: ฿{p['budget']:,.2f})")
-                    c2.button("✅ ยอมรับ", key=f"acc_{p['member_row_id']}", on_click=accept_trip_callback, args=(p['member_row_id'], p['name'], p['created_by'], user_now), use_container_width=True)
-                    c3.button("❌ ปฏิเสธ", key=f"rej_{p['member_row_id']}", on_click=reject_trip_callback, args=(p['member_row_id'], p['name'], p['created_by'], user_now), use_container_width=True)
-            st.divider()
-
-        st.subheader("💬 ประวัติล่าสุด")
-        if notis.empty: st.info("ไม่มีประวัติ")
-        else:
-            for _, n in notis.iterrows(): st.write(f"[{n['created_at']}] {n['message']}")
-
     # --- หน้าทริปของฉัน ---
-    elif "🧳" in menu:
+    if menu == "🧳 ทริปของฉัน":
         if my_trips.empty:
-            st.warning("คุณยังไม่มีทริป")
+            st.info("ยังไม่มีทริปในขณะนี้ สร้างทริปใหม่หรือรอเพื่อนดึงเข้ากลุ่มได้เลย")
         else:
             trip_names = my_trips['name'].tolist()
             if st.session_state.current_trip_name not in trip_names: st.session_state.current_trip_name = trip_names[0]
@@ -178,13 +120,13 @@ else:
             t_row = my_trips[my_trips['name'] == sel_trip].iloc[0]
             t_id = t_row['id']
             
-            tab1, tab2, tab3 = st.tabs(["📝 รายจ่าย", "📊 สรุป", "👥 สมาชิก"])
+            tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายจ่าย", "📊 สรุปภาพรวม", "👥 สมาชิกทริป"])
             
-            with tab1: # บันทึกรายจ่าย
+            with tab1: # รายจ่าย
                 with st.form("exp_form", clear_on_submit=True):
-                    amt = st.number_input("จำนวนเงิน", min_value=0.0)
+                    amt = st.number_input("จำนวนเงิน (บาท)", min_value=0.0)
                     cat = st.selectbox("หมวดหมู่", ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "อื่นๆ"])
-                    note = st.text_input("โน้ต")
+                    note = st.text_input("รายละเอียด")
                     if st.form_submit_button("บันทึก"):
                         with get_connection() as conn:
                             conn.cursor().execute('INSERT INTO transactions(date, type, category, amount, note, created_by, trip_id) VALUES (?,?,?,?,?,?,?)',
@@ -193,31 +135,30 @@ else:
                         st.success("บันทึกสำเร็จ!")
                         st.rerun()
 
-            with tab2: # สรุปและกราฟ
+            with tab2: # สรุป
                 with get_connection() as conn:
                     df = pd.read_sql_query('SELECT * FROM transactions WHERE trip_id=?', conn, params=(t_id,))
                 if not df.empty:
-                    st.metric("ยอดรวมรายจ่าย", f"฿{df['amount'].sum():,.2f}")
-                    fig = px.pie(df, values='amount', names='category', title="สัดส่วนรายจ่าย")
-                    st.plotly_chart(fig)
+                    st.metric("ยอดรวมรายจ่ายทริปนี้", f"฿{df['amount'].sum():,.2f}")
+                    fig = px.pie(df, values='amount', names='category', hole=0.3)
+                    st.plotly_chart(fig, use_container_width=True)
                     st.dataframe(df[['date', 'category', 'amount', 'created_by', 'note']], use_container_width=True)
-                else: st.info("ยังไม่มีข้อมูล")
+                else: st.info("ยังไม่มีประวัติการจ่ายเงิน")
 
-            with tab3: # ระบบสมาชิกและ Quick Invite
-                st.subheader("👥 สมาชิกในทริป")
+            with tab3: # สมาชิก & Auto-Join
+                st.subheader("👥 สมาชิกที่อยู่ในทริปนี้")
                 with get_connection() as conn:
                     m_df = pd.read_sql_query('''
-                        SELECT u.username, u.last_active, tm.status FROM trip_members tm
+                        SELECT u.username, u.last_active FROM trip_members tm
                         JOIN users u ON tm.username = u.username WHERE tm.trip_id = ?
                     ''', conn, params=(t_id,))
                 
                 for _, m in m_df.iterrows():
-                    icon = get_status_icon(m['last_active'])
-                    st.write(f"{icon} **{m['username']}** ({'✅ เข้าแล้ว' if m['status']=='accepted' else '⏱️ รอรับ'})")
+                    st.write(f"{get_status_icon(m['last_active'])} **{m['username']}**")
                 
                 if t_row['created_by'] == user_now:
                     st.divider()
-                    st.subheader("⚡ ดึงเพื่อนที่ออนไลน์อยู่เข้าทริป")
+                    st.subheader("⚡ ดึงเพื่อนที่ออนไลน์เข้าทริปทันที")
                     five_mins_ago = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
                     with get_connection() as conn:
                         online_f = pd.read_sql_query('''
@@ -230,32 +171,41 @@ else:
                         for idx, f in online_f.iterrows():
                             if cols[idx % 3].button(f"➕ ดึง {f['username']}", key=f"q_{f['username']}"):
                                 with get_connection() as conn:
-                                    conn.cursor().execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,?)', (t_id, f['username'], 'pending'))
-                                    send_notification(f['username'], f"✉️ {user_now} ดึงคุณเข้าร่วมทริป '{sel_trip}'", conn=conn)
+                                    conn.cursor().execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,?)', (t_id, f['username'], 'accepted'))
+                                    send_notification(f['username'], f"🚀 {user_now} ดึงคุณเข้าทริป '{sel_trip}' แล้ว", conn=conn)
                                     conn.commit()
-                                st.success(f"เชิญ {f['username']} แล้ว!")
                                 st.rerun()
                     else: st.info("ไม่มีเพื่อนออนไลน์ในขณะนี้")
 
                     st.divider()
-                    target = st.text_input("🔍 ค้นหาชื่อเพื่อเชิญ (กรณีไม่ออนไลน์)")
-                    if st.button("ส่งคำเชิญ"):
+                    target = st.text_input("🔍 พิมพ์ชื่อเพื่อดึงเข้าทริปทันที")
+                    if st.button("ดึงเพื่อนเข้ากลุ่ม"):
                         with get_connection() as conn:
                             exists = conn.cursor().execute('SELECT * FROM users WHERE username=?', (target,)).fetchone()
-                            if exists:
-                                conn.cursor().execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,?)', (t_id, target, 'pending'))
-                                send_notification(target, f"✉️ {user_now} เชิญเข้าทริป '{sel_trip}'", conn=conn)
+                            is_in = conn.cursor().execute('SELECT * FROM trip_members WHERE trip_id=? AND username=?', (t_id, target)).fetchone()
+                            if exists and not is_in:
+                                conn.cursor().execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,?)', (t_id, target, 'accepted'))
+                                send_notification(target, f"🚀 {user_now} ดึงคุณเข้าทริป '{sel_trip}'", conn=conn)
                                 conn.commit()
-                                st.success("เชิญเรียบร้อย!")
-                            else: st.error("ไม่พบชื่อผู้ใช้")
+                                st.success(f"ดึง {target} สำเร็จ")
+                                st.rerun()
+                            else: st.error("ไม่พบชื่อผู้ใช้หรืออยู่ในทริปอยู่แล้ว")
+
+    # --- หน้าแจ้งเตือน ---
+    elif menu == "🔔 แจ้งเตือน":
+        st.header("🔔 ประวัติการแจ้งเตือน")
+        if notis.empty: st.info("ไม่มีการแจ้งเตือนใหม่")
+        else:
+            for _, n in notis.iterrows():
+                st.write(f"[{n['created_at']}] {n['message']}")
 
     # --- หน้าสร้างทริป ---
-    elif "➕" in menu:
+    elif menu == "➕ สร้างทริปใหม่":
         st.header("➕ สร้างทริปใหม่")
         with st.form("n_trip"):
             name = st.text_input("ชื่อทริป")
-            bud = st.number_input("งบประมาณ", min_value=0.0)
-            if st.form_submit_button("สร้าง"):
+            bud = st.number_input("งบประมาณรวม", min_value=0.0)
+            if st.form_submit_button("ยืนยันสร้างทริป"):
                 if name:
                     with get_connection() as conn:
                         cur = conn.cursor()
@@ -264,5 +214,5 @@ else:
                         cur.execute('INSERT INTO trip_members(trip_id, username, status) VALUES (?,?,?)', (new_id, user_now, 'accepted'))
                         conn.commit()
                     st.session_state.menu_selection = "🧳 ทริปของฉัน"
+                    st.session_state.current_trip_name = name
                     st.rerun()
-                else: st.error("กรุณากรอกชื่อทริป")
