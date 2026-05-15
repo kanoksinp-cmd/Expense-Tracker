@@ -30,7 +30,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS notifications 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)''')
         
-        # [CRITICAL FIX] บังคับตรวจสอบและอัปเดตคอลัมน์ status สำหรับตารางเดิม
+        # ตรวจสอบและอัปเดตคอลัมน์ status สำหรับตารางเดิมที่อาจจะยังไม่มี
         try:
             c.execute('SELECT status FROM trip_members LIMIT 1')
         except sqlite3.OperationalError:
@@ -42,7 +42,7 @@ def init_db():
             
 init_db()
 
-# --- 2. ฟังก์ชันเสริม ---
+# --- 2. ฟังก์ชันเสริมและระบบ Callback ---
 def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -81,6 +81,30 @@ def check_and_show_popups(username):
                 st.toast(msg, icon="🔔")
                 conn.cursor().execute('UPDATE notifications SET is_read=1 WHERE id=?', (noti_id,))
             conn.commit()
+
+# --- ฟังก์ชันจัดการการกดตอบรับ/ปฏิเสธแบบคอลแบ็ก (ป้องกันปุ่มเอ๋อ 100%) ---
+def accept_trip_callback(row_id, trip_name, creator, username):
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        conn.cursor().execute('UPDATE trip_members SET status="accepted" WHERE id=?', (row_id,))
+        now = datetime.now().strftime("%H:%M")
+        conn.cursor().execute(
+            'INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', 
+            (creator, f"🤝 {username} ได้ตอบรับเข้าร่วมทริป '{trip_name}' แล้ว!", now)
+        )
+        conn.commit()
+    st.session_state.current_trip_name = trip_name
+    st.toast(f"เข้าร่วมทริป {trip_name} สำเร็จ!", icon="✅")
+
+def reject_trip_callback(row_id, trip_name, creator, username):
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        conn.cursor().execute('DELETE FROM trip_members WHERE id=?', (row_id,))
+        now = datetime.now().strftime("%H:%M")
+        conn.cursor().execute(
+            'INSERT INTO notifications(receiver, message, created_at) VALUES (?,?,?)', 
+            (creator, f"👎 {username} ปฏิเสธการเข้าร่วมทริป '{trip_name}'", now)
+        )
+        conn.commit()
+    st.toast("ปฏิเสธคำเชิญเรียบร้อยแล้ว")
 
 # --- 3. UI หน้า Login / Register ---
 st.set_page_config(page_title="Trip Expense Master", layout="wide")
@@ -157,29 +181,30 @@ else:
         if not pending_trips.empty:
             st.subheader("✉️ คำเชิญเข้าร่วมทริปใหม่")
             for _, p_trip in pending_trips.iterrows():
-                # [FIXED KEY] ใช้ p_trip['member_row_id'] มาเป็น Key เพื่อให้ปุ่มมีตัวตนเฉพาะตัว ไม่ซ้ำกันในระบบ
                 row_id = p_trip['member_row_id']
+                t_name = p_trip['name']
+                creator = p_trip['created_by']
                 
                 with st.container(border=True):
-                    c_text, c_accept, c_reject = st.columns([6, 1.5, 1.5])
-                    c_text.markdown(f"**{p_trip['created_by']}** ได้เชิญคุณเข้าร่วมทริป **'{p_trip['name']}'** (งบประมาณ: ฿{p_trip['budget']:,.2f})")
+                    c_text, c_accept, c_reject = st.columns([5, 2, 1.5])
+                    c_text.markdown(f"**{creator}** ได้เชิญคุณเข้าร่วมทริป **'{t_name}'** (งบ: ฿{p_trip['budget']:,.2f})")
                     
-                    if c_accept.button("✅ ตอบรับคำเชิญ", key=f"btn_accept_{row_id}", use_container_width=True):
-                        with get_connection() as conn:
-                            conn.cursor().execute('UPDATE trip_members SET status="accepted" WHERE id=?', (row_id,))
-                            send_notification(p_trip['created_by'], f"🤝 {user_now} ได้ตอบรับเข้าร่วมทริป '{p_trip['name']}' แล้ว!", conn=conn)
-                            conn.commit()
-                        st.session_state.current_trip_name = p_trip['name'] # เปลี่ยนหน้าไปทริปนี้ให้ทันที
-                        st.success(f"เข้าร่วมทริป {p_trip['name']} สำเร็จ!")
-                        st.rerun()
+                    # ใช้งานผ่าน on_click callback เพื่อแก้ปัญหาปุ่มกดไม่ติดอย่างเด็ดขาด
+                    c_accept.button(
+                        "✅ ตอบรับคำเชิญ", 
+                        key=f"btn_acc_{row_id}", 
+                        use_container_width=True,
+                        on_click=accept_trip_callback,
+                        args=(row_id, t_name, creator, user_now)
+                    )
                         
-                    if c_reject.button("❌ ปฏิเสธ", key=f"btn_reject_{row_id}", use_container_width=True):
-                        with get_connection() as conn:
-                            conn.cursor().execute('DELETE FROM trip_members WHERE id=?', (row_id,))
-                            send_notification(p_trip['created_by'], f"👎 {user_now} ปฏิเสธการเข้าร่วมทริป '{p_trip['name']}'", conn=conn)
-                            conn.commit()
-                        st.info("ปฏิเสธคำเชิญเรียบร้อยแล้ว")
-                        st.rerun()
+                    c_reject.button(
+                        "❌ ปฏิเสธ", 
+                        key=f"btn_rej_{row_id}", 
+                        use_container_width=True,
+                        on_click=reject_trip_callback,
+                        args=(row_id, t_name, creator, user_now)
+                    )
             st.divider()
 
         st.subheader("💬 ประวัติการแจ้งเตือนล่าสุด")
