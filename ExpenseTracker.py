@@ -91,7 +91,6 @@ else:
     update_online_status(user_now)
     
     with get_connection() as conn:
-        # ดึงเฉพาะทริปที่เข้าร่วมแล้ว (ซึ่งเวอร์ชันนี้จะเข้าร่วมทันทีที่โดนดึง)
         my_trips = pd.read_sql_query('''
             SELECT * FROM trips WHERE id IN (SELECT trip_id FROM trip_members WHERE username=? AND status='accepted')
         ''', conn, params=(user_now,))
@@ -119,8 +118,9 @@ else:
             
             t_row = my_trips[my_trips['name'] == sel_trip].iloc[0]
             t_id = t_row['id']
+            is_creator = (t_row['created_by'] == user_now)
             
-            tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายจ่าย", "📊 สรุปภาพรวม", "👥 สมาชิกทริป"])
+            tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายจ่าย", "📊 สรุปภาพรวม", "👥 จัดการสมาชิก"])
             
             with tab1: # รายจ่าย
                 with st.form("exp_form", clear_on_submit=True):
@@ -145,8 +145,8 @@ else:
                     st.dataframe(df[['date', 'category', 'amount', 'created_by', 'note']], use_container_width=True)
                 else: st.info("ยังไม่มีประวัติการจ่ายเงิน")
 
-            with tab3: # สมาชิก & Auto-Join
-                st.subheader("👥 สมาชิกที่อยู่ในทริปนี้")
+            with tab3: # สมาชิก & การจัดการ (ระบบจัดการสมาชิกที่เพิ่มมา)
+                st.subheader("👥 สมาชิกในทริปนี้")
                 with get_connection() as conn:
                     m_df = pd.read_sql_query('''
                         SELECT u.username, u.last_active FROM trip_members tm
@@ -154,9 +154,19 @@ else:
                     ''', conn, params=(t_id,))
                 
                 for _, m in m_df.iterrows():
-                    st.write(f"{get_status_icon(m['last_active'])} **{m['username']}**")
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{get_status_icon(m['last_active'])} **{m['username']}** {'(คุณ/ผู้สร้าง)' if m['username'] == t_row['created_by'] else ''}")
+                    
+                    # ผู้สร้างสามารถลบสมาชิกคนอื่นได้
+                    if is_creator and m['username'] != user_now:
+                        if c2.button("ลบออก", key=f"kick_{m['username']}"):
+                            with get_connection() as conn:
+                                conn.cursor().execute('DELETE FROM trip_members WHERE trip_id=? AND username=?', (t_id, m['username']))
+                                send_notification(m['username'], f"❌ คุณถูกลบออกจากทริป '{sel_trip}' แล้ว", conn=conn)
+                                conn.commit()
+                            st.rerun()
                 
-                if t_row['created_by'] == user_now:
+                if is_creator:
                     st.divider()
                     st.subheader("⚡ ดึงเพื่อนที่ออนไลน์เข้าทริปทันที")
                     five_mins_ago = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
