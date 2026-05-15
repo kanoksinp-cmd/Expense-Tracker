@@ -166,7 +166,7 @@ if not existing_members:
     st.stop()
 
 st.title(f"📍 ทริป: {current_trip}")
-tab1, tab2, tab3 = st.tabs(["📝 บันทึกบิล", "📊 ประวัติและแก้ไข", "💰 สรุปเคลียร์เงิน"])
+tab1, tab2, tab3 = st.tabs(["📝สร้างบิลใหม่", "📊 ประวัติและแก้ไข", "💰 สรุปเคลียร์เงิน"])
 
 with tab1:
     with st.form("add_bill", clear_on_submit=True):
