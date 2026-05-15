@@ -78,8 +78,8 @@ st.sidebar.header("⚙️ ระบบจัดการข้อมูล")
 
 # 3.1 ลงทะเบียน User
 with st.sidebar.expander("👤 ลงทะเบียนรายชื่อสมาชิก"):
-    reg_name = st.text_input("ระบุชื่อผู้ใช้งาน:").strip()
-    if st.button("ลงทะเบียน"):
+    reg_name = st.text_input("กรอกชื่อสมาชิก:").strip()
+    if st.button("เพิ่มสามชิก"):
         if reg_name:
             try:
                 conn = get_db_connection()
