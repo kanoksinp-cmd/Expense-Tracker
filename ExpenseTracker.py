@@ -161,7 +161,7 @@ conn.close()
 
 # --- 4. Main UI ---
 if not existing_members:
-    st.title(f"📍 ทริป: {current_trip}")
+    st.title(f"✈️ข้อมูลทริป: {current_trip}")
     st.warning("กรุณาเลือกสมาชิกเข้าทริปก่อน")
     st.stop()
 
