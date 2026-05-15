@@ -30,7 +30,6 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS notifications 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, receiver TEXT, message TEXT, is_read INTEGER DEFAULT 0, created_at TEXT)''')
         
-        # ตรวจสอบและอัปเดตคอลัมน์ status สำหรับตารางเดิมที่อาจจะยังไม่มี
         try:
             c.execute('SELECT status FROM trip_members LIMIT 1')
         except sqlite3.OperationalError:
@@ -82,7 +81,7 @@ def check_and_show_popups(username):
                 conn.cursor().execute('UPDATE notifications SET is_read=1 WHERE id=?', (noti_id,))
             conn.commit()
 
-# --- ฟังก์ชันจัดการการกดตอบรับ/ปฏิเสธแบบคอลแบ็ก (ป้องกันปุ่มเอ๋อ 100%) ---
+# --- ฟังก์ชันจัดการการกดตอบรับ/ปฏิเสธแบบคอลแบ็ก (อัปเดตให้กดแล้วเข้าทริปทันที) ---
 def accept_trip_callback(row_id, trip_name, creator, username):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         conn.cursor().execute('UPDATE trip_members SET status="accepted" WHERE id=?', (row_id,))
@@ -92,8 +91,11 @@ def accept_trip_callback(row_id, trip_name, creator, username):
             (creator, f"🤝 {username} ได้ตอบรับเข้าร่วมทริป '{trip_name}' แล้ว!", now)
         )
         conn.commit()
+    
+    # [จุดสำคัญ] บังคับสลับเมนูหลังบ้านให้ย้ายไปที่หน้าทริปของฉัน และระบุชื่อทริปนี้ทันที
+    st.session_state.menu_selection = "🧳 ทริปของฉัน"
     st.session_state.current_trip_name = trip_name
-    st.toast(f"เข้าร่วมทริป {trip_name} สำเร็จ!", icon="✅")
+    st.toast(f"เข้าสู่ทริป {trip_name} เรียบร้อยแล้ว! กำลังโหลดข้อมูลปัจจุบัน...", icon="✅")
 
 def reject_trip_callback(row_id, trip_name, creator, username):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -115,6 +117,9 @@ if 'editing_tx_id' not in st.session_state:
     st.session_state.editing_tx_id = None
 if 'current_trip_name' not in st.session_state:
     st.session_state.current_trip_name = None
+# สร้าง State สำหรับจัดการการสลับเมนูแบบอัตโนมัติ
+if 'menu_selection' not in st.session_state:
+    st.session_state.menu_selection = None
 
 if not st.session_state.username:
     st.title("💰 Trip Expense Tracker")
@@ -167,11 +172,26 @@ else:
     total_alerts = len(notis[notis['is_read'] == 0]) + len(pending_trips)
     noti_text = f"🔔 แจ้งเตือน ({total_alerts})" if total_alerts > 0 else "🔔 แจ้งเตือน"
     
-    menu = st.sidebar.radio("เมนู", [noti_text, "🧳 ทริปของฉัน", "➕ สร้างทริปใหม่"])
+    # ดักจับและกำหนดค่าเริ่มต้นของเมนูจาก Session State
+    menu_list = [noti_text, "🧳 ทริปของฉัน", "➕ สร้างทริปใหม่"]
+    
+    if st.session_state.menu_selection not in menu_list:
+        # ถ้าไม่มีค่าเดิม หรือค่าถูกเคลียร์ ให้ตั้งค่าไปที่หน้าแจ้งเตือนเป็นหลักหากมีคำเชิญค้างอยู่
+        st.session_state.menu_selection = noti_text if total_alerts > 0 else "🧳 ทริปของฉัน"
+
+    # ปรับปรุงให้เมนูฟังคำสั่งจาก `st.session_state.menu_selection` โดยตรง
+    menu = st.sidebar.radio(
+        "เมนู", 
+        menu_list, 
+        index=menu_list.index(st.session_state.menu_selection) if st.session_state.menu_selection in menu_list else 0,
+        key="main_menu_radio"
+    )
+    st.session_state.menu_selection = menu # อัปเดตค่ากลับเมื่อมีการคลิกเมนูปกติ
     
     if st.sidebar.button("Log out"):
         st.session_state.username = None
         st.session_state.current_trip_name = None
+        st.session_state.menu_selection = None
         st.rerun()
 
     # --- หน้าแจ้งเตือน & ระบบตอบรับคำเชิญเข้าทริป ---
@@ -189,9 +209,8 @@ else:
                     c_text, c_accept, c_reject = st.columns([5, 2, 1.5])
                     c_text.markdown(f"**{creator}** ได้เชิญคุณเข้าร่วมทริป **'{t_name}'** (งบ: ฿{p_trip['budget']:,.2f})")
                     
-                    # ใช้งานผ่าน on_click callback เพื่อแก้ปัญหาปุ่มกดไม่ติดอย่างเด็ดขาด
                     c_accept.button(
-                        "✅ ตอบรับคำเชิญ", 
+                        "✅ ตอบรับคำเชิญและเข้าทริป", 
                         key=f"btn_acc_{row_id}", 
                         use_container_width=True,
                         on_click=accept_trip_callback,
