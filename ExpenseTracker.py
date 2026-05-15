@@ -207,11 +207,11 @@ conn.close()
 
 # --- 4. Main UI ---
 if not existing_members:
-    st.title(f"📍 ทริป: {current_trip}")
+    st.title(f"✈️ ทริป: {current_trip}")
     st.warning("กรุณาเลือกสมาชิกเข้าทริปก่อน")
     st.stop()
 
-st.title(f"📍 ทริป: {current_trip}")
+st.title(f"✈️ ทริป: {current_trip}")
 tab1, tab2, tab3 = st.tabs(["📝 บันทึกบิล", "📊 ประวัติและแก้ไข", "💰 สรุปเคลียร์เงิน"])
 
 with tab1:
