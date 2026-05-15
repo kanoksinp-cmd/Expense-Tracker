@@ -175,9 +175,16 @@ with st.sidebar.expander("🗑️ ถังขยะ"):
     for dt in deleted_trips:
         c1, c2 = st.columns([2, 1])
         c1.write(dt['name'])
-        if c2.button("🔄", key=f"res_{dt['id']}"):
+        if c2.button("กู้คืน", key=f"res_{dt['id']}"):
             conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
             conn.commit(); st.rerun()
+        if sub_col2.button("❌", key=f"pdel_{dt['id']}", help="ลบถาวร"):
+                conn.execute("DELETE FROM settlements WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM expenses WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM members WHERE trip_id = ?", (dt['id'],))
+                conn.execute("DELETE FROM trips WHERE id = ?", (dt['id'],))
+                conn.commit()
+                st.rerun()
 
 if not active_trip_list:
     st.title("✈️ Trip Expense Splitter")
