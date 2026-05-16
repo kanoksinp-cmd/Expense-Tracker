@@ -38,11 +38,11 @@ def compress_image(uploaded_file):
 init_db()
 
 # --- 3. Sidebar ---
-st.sidebar.header("👥 การจัดการระบบ")
+st.sidebar.header("👥 ลงทะเบียนสมาชิกใหม่")
 
-with st.sidebar.expander("👤 ลงทะเบียน User"):
+with st.sidebar.expander("👤 ลงทะเบียน"):
     reg_name = st.text_input("ชื่อผู้ใช้งาน:").strip()
-    if st.button("ลงทะเบียน"):
+    if st.button("เพิ่มสมาชิก"):
         if reg_name:
             try:
                 conn = get_db_connection()
