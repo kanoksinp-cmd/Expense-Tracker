@@ -4,58 +4,8 @@ import sqlite3
 import io
 from PIL import Image
 
-# 1. ตั้งค่าหน้าจอ
+# 1. ตั้งค่าหน้าจอ (ใช้ Default Theme ของ Streamlit)
 st.set_page_config(page_title="Trip Expense Splitter Pro", layout="wide")
-
-# --- 1.5 ดีไซน์และตั้งค่าธีม 7 แบบ (ปรับปรุงความคมชัดของตัวหนังสือ) ---
-THEMES = {
-    "🟢 Emerald Explorer": {
-        "bg": "#F4F7F5", "sidebar": "#E6EDE8", "text": "#1F2937", "primary": "#10B981", 
-        "card": "#FFFFFF", "border": "#D1D5DB", "input_bg": "#FFFFFF"
-    },
-    "🔵 Ocean Breeze": {
-        "bg": "#F0F4F8", "sidebar": "#D9E2EC", "text": "#102A43", "primary": "#0284C7", 
-        "card": "#FFFFFF", "border": "#BCCCDC", "input_bg": "#FFFFFF"
-    },
-    "🟣 Cyber Punk (Dark)": {
-        "bg": "#0F172A", "sidebar": "#1E293B", "text": "#F8FAFC", "primary": "#D946EF", 
-        "card": "#1E293B", "border": "#334155", "input_bg": "#0F172A"
-    },
-    "🟡 Sunset Glow": {
-        "bg": "#FFFBEB", "sidebar": "#FEF3C7", "text": "#451A03", "primary": "#F59E0B", 
-        "card": "#FFFFFF", "border": "#FDE68A", "input_bg": "#FFFFFF"
-    },
-    "🔴 Rose Gold": {
-        "bg": "#FAF5F5", "sidebar": "#F3E8E8", "text": "#4C0519", "primary": "#E11D48", 
-        "card": "#FFFFFF", "border": "#FFE4E6", "input_bg": "#FFFFFF"
-    },
-    "🛞 Stealth Dark (Dark)": {
-        "bg": "#1F2937", "sidebar": "#111827", "text": "#F9FAFB", "primary": "#3B82F6", 
-        "card": "#374151", "border": "#4B5563", "input_bg": "#1F2937"
-    },
-    "💼 Classic Pro": {
-        "bg": "#FFFFFF", "sidebar": "#F3F4F6", "text": "#111827", "primary": "#4F46E5", 
-        "card": "#F9FAFB", "border": "#E5E7EB", "input_bg": "#FFFFFF"
-    }
-}
-
-st.sidebar.header("🎨 หน้าตาแอปพลิเคชัน")
-selected_theme_name = st.sidebar.selectbox("เลือกธีมหน้าจอ:", list(THEMES.keys()), index=0)
-theme = THEMES[selected_theme_name]
-
-st.markdown(f"""
-    <style>
-        .stApp {{ background-color: {theme['bg']} !important; color: {theme['text']} !important; }}
-        [data-testid="stSidebar"] {{ background-color: {theme['sidebar']} !important; }}
-        h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{ color: {theme['text']} !important; }}
-        .stCheckbox label span {{ color: {theme['text']} !important; font-weight: 500; }}
-        div[data-testid="stForm"] {{ background-color: {theme['card']} !important; border: 1px solid {theme['border']} !important; border-radius: 12px; }}
-        .stTextInput input, .stNumberInput input, div[data-baseweb="select"] {{ background-color: {theme['input_bg']} !important; color: {theme['text']} !important; border: 1px solid {theme['border']} !important; }}
-        .stTable table {{ color: {theme['text']} !important; background-color: {theme['card']} !important; }}
-        button[kind="primary"] {{ background-color: {theme['primary']} !important; color: white !important; border: none !important; }}
-        button[data-baseweb="tab"] p {{ color: {theme['text']} !important; }}
-    </style>
-""", unsafe_allow_html=True)
 
 # 2. ฟังก์ชันจัดการฐานข้อมูล
 DB_FILE = "trip_database.db"
@@ -88,7 +38,8 @@ def compress_image(uploaded_file):
 init_db()
 
 # --- 3. Sidebar ---
-st.sidebar.markdown("---")
+st.sidebar.header("👥 การจัดการระบบ")
+
 with st.sidebar.expander("👤 ลงทะเบียน User"):
     reg_name = st.text_input("ชื่อผู้ใช้งาน:").strip()
     if st.button("ลงทะเบียน"):
@@ -124,7 +75,6 @@ with st.sidebar.expander("🗑️ ถังขยะ"):
                 conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
                 conn.commit(); st.rerun()
             if sub_c2.button("ลบ", key=f"pdel_{dt['id']}", help="ลบถาวร"):
-                # ลบข้อมูลที่เกี่ยวข้องทั้งหมด
                 conn.execute("DELETE FROM settlements WHERE trip_id = ?", (dt['id'],))
                 conn.execute("DELETE FROM expenses WHERE trip_id = ?", (dt['id'],))
                 conn.execute("DELETE FROM members WHERE trip_id = ?", (dt['id'],))
@@ -161,12 +111,12 @@ conn.close()
 
 # --- 4. Main UI ---
 if not existing_members:
-    st.title(f"✈️ข้อมูลทริป: {current_trip}")
+    st.title(f"✈️ ข้อมูลทริป: {current_trip}")
     st.warning("กรุณาเลือกสมาชิกเข้าทริปก่อน")
     st.stop()
 
-st.title(f"✈️ข้อมูลทริป: {current_trip}")
-tab1, tab2, tab3 = st.tabs(["📝สร้างบิลใหม่", "📊 ประวัติบิล", "💰 สรุปเคลียร์เงินสมาชิก"])
+st.title(f"✈️ ข้อมูลทริป: {current_trip}")
+tab1, tab2, tab3 = st.tabs(["📝 สร้างบิลใหม่", "📊 ประวัติบิล", "💰 สรุปเคลียร์เงินสมาชิก"])
 
 with tab1:
     with st.form("add_bill", clear_on_submit=True):
