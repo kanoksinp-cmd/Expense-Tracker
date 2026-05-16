@@ -4,11 +4,24 @@ import sqlite3
 import io
 from PIL import Image
 
-# 1. ตั้งค่าหน้าจอ (ใช้ Default Theme ของ Streamlit)
+# 1. ตั้งค่าหน้าจอ
 st.set_page_config(page_title="Trip Expense Splitter Pro", layout="wide")
 
 # 2. ฟังก์ชันจัดการฐานข้อมูล
 DB_FILE = "trip_database.db"
+
+BANK_LIST = [
+    "-- เลือกธนาคาร --",
+    "กสิกรไทย (KBank)",
+    "ไทยพาณิชย์ (SCB)",
+    "กรุงไทย (KTB)",
+    "กรุงเทพ (BBL)",
+    "กรุงศรีอยุธยา (BAY)",
+    "ทหารไทยธนชาต (TTB)",
+    "ออมสิน (GSB)",
+    "ธ.ก.ส.",
+    "ยูโอบี (UOB)"
+]
 
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
@@ -23,6 +36,17 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, name TEXT, FOREIGN KEY(trip_id) REFERENCES trips(id))')
     cursor.execute('CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, description TEXT, amount REAL, payer_name TEXT, split_members TEXT, image_blob BLOB, FOREIGN KEY(trip_id) REFERENCES trips(id))')
     cursor.execute('CREATE TABLE IF NOT EXISTS settlements (id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id INTEGER, debtor TEXT, creditor TEXT, amount REAL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(trip_id) REFERENCES trips(id))')
+    
+    # อัปเดตโครงสร้างรองรับประเภทธนาคารเพิ่มเติม
+    cursor.execute("PRAGMA table_info(all_users)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'promptpay' not in columns:
+        cursor.execute("ALTER TABLE all_users ADD COLUMN promptpay TEXT")
+    if 'bank_name' not in columns:
+        cursor.execute("ALTER TABLE all_users ADD COLUMN bank_name TEXT")
+    if 'bank_account' not in columns:
+        cursor.execute("ALTER TABLE all_users ADD COLUMN bank_account TEXT")
+        
     conn.commit()
     conn.close()
 
@@ -38,17 +62,54 @@ def compress_image(uploaded_file):
 init_db()
 
 # --- 3. Sidebar ---
-st.sidebar.header("👥 ลงทะเบียนสมาชิกใหม่")
+st.sidebar.header("👥 จัดการสมาชิก & บัญชี")
 
-with st.sidebar.expander("👤 ลงทะเบียน"):
-    reg_name = st.text_input("ชื่อผู้ใช้งาน:").strip()
-    if st.button("เพิ่มสมาชิก"):
-        if reg_name:
-            try:
+with st.sidebar.expander("👤 ลงทะเบียน / แก้ไขข้อมูลสมาชิก"):
+    conn = get_db_connection()
+    existing_all_users = [row["name"] for row in conn.execute("SELECT name FROM all_users").fetchall()]
+    conn.close()
+    
+    user_mode = st.radio("เลือกการทำงาน:", ["ลงทะเบียนใหม่", "อัปเดตข้อมูลบัญชีเดิม"], horizontal=True)
+    
+    if user_mode == "ลงทะเบียนใหม่":
+        reg_name = st.text_input("ชื่อผู้ใช้งานใหม่:").strip()
+        reg_pp = st.text_input("เลขพร้อมเพย์ (ไม่บังคับ):", key="reg_pp").strip()
+        reg_bank_name = st.selectbox("เลือกธนาคาร:", BANK_LIST, key="reg_bank_name")
+        reg_bank_acc = st.text_input("เลขบัญชีธนาคาร:", key="reg_bank_acc").strip()
+        
+        if st.button("เพิ่มสมาชิก"):
+            if reg_name:
+                try:
+                    final_bank = reg_bank_name if reg_bank_name != "-- เลือกธนาคาร --" else ""
+                    conn = get_db_connection()
+                    conn.execute("INSERT INTO all_users (name, promptpay, bank_name, bank_account) VALUES (?, ?, ?, ?)", 
+                                 (reg_name, reg_pp, final_bank, reg_bank_acc))
+                    conn.commit(); conn.close(); st.toast("ลงทะเบียนสำเร็จ!"); st.rerun()
+                except: st.sidebar.error("ชื่อนี้มีในระบบแล้ว")
+            else:
+                st.error("กรุณากรอกชื่อสมาชิก")
+                
+    else:
+        if existing_all_users:
+            target_user = st.selectbox("เลือกสมาชิกที่ต้องการอัปเดต:", existing_all_users)
+            conn = get_db_connection()
+            user_data = conn.execute("SELECT * FROM all_users WHERE name = ?", (target_user,)).fetchone()
+            conn.close()
+            
+            edit_pp = st.text_input("แก้ไขเลขพร้อมเพย์:", value=user_data['promptpay'] if user_data['promptpay'] else "")
+            db_bank = user_data['bank_name'] if user_data['bank_name'] else "-- เลือกธนาคาร --"
+            bank_idx = BANK_LIST.index(db_bank) if db_bank in BANK_LIST else 0
+            edit_bank_name = st.selectbox("แก้ไขธนาคาร:", BANK_LIST, index=bank_idx)
+            edit_bank_acc = st.text_input("แก้ไขเลขบัญชีธนาคาร:", value=user_data['bank_account'] if user_data['bank_account'] else "")
+            
+            if st.button("อัปเดตข้อมูลบัญชี"):
+                final_edit_bank = edit_bank_name if edit_bank_name != "-- เลือกธนาคาร --" else ""
                 conn = get_db_connection()
-                conn.execute("INSERT INTO all_users (name) VALUES (?)", (reg_name,))
-                conn.commit(); conn.close(); st.toast("ลงทะเบียนสำเร็จ!"); st.rerun()
-            except: st.sidebar.error("ชื่อนี้มีในระบบแล้ว")
+                conn.execute("UPDATE all_users SET promptpay = ?, bank_name = ?, bank_account = ? WHERE name = ?", 
+                             (edit_pp, final_edit_bank, edit_bank_acc, target_user))
+                conn.commit(); conn.close(); st.toast("อัปเดตข้อมูลบัญชีเรียบร้อย!"); st.rerun()
+        else:
+            st.caption("ยังไม่มีสมาชิกในระบบ")
 
 st.sidebar.markdown("---")
 new_trip_name = st.sidebar.text_input("➕ สร้างทริปใหม่:").strip()
@@ -60,7 +121,7 @@ if st.sidebar.button("บันทึกทริป"):
             conn.commit(); conn.close(); st.toast("สร้างทริปเรียบร้อย!"); st.rerun()
         except: st.sidebar.error("ชื่อทริปซ้ำ")
 
-# --- ส่วนถังขยะพร้อมปุ่มลบถาวร ---
+# --- ส่วนถังขยะ ---
 conn = get_db_connection()
 with st.sidebar.expander("🗑️ ถังขยะ"):
     deleted_trips = conn.execute("SELECT * FROM trips WHERE status = 1").fetchall()
@@ -71,10 +132,10 @@ with st.sidebar.expander("🗑️ ถังขยะ"):
             c1, c2 = st.columns([1.5, 1.5])
             c1.write(dt['name'])
             sub_c1, sub_c2 = c2.columns(2)
-            if sub_c1.button("กู้คืน", key=f"res_{dt['id']}", help="กู้คืน"):
+            if sub_c1.button("กู้คืน", key=f"res_{dt['id']}"):
                 conn.execute("UPDATE trips SET status = 0 WHERE id = ?", (dt['id'],))
                 conn.commit(); st.rerun()
-            if sub_c2.button("ลบ", key=f"pdel_{dt['id']}", help="ลบถาวร"):
+            if sub_c2.button("ลบ", key=f"pdel_{dt['id']}"):
                 conn.execute("DELETE FROM settlements WHERE trip_id = ?", (dt['id'],))
                 conn.execute("DELETE FROM expenses WHERE trip_id = ?", (dt['id'],))
                 conn.execute("DELETE FROM members WHERE trip_id = ?", (dt['id'],))
@@ -98,9 +159,9 @@ if st.sidebar.button("🗑️ ย้ายทริปลงถังขยะ")
     conn.commit(); st.rerun()
 
 st.sidebar.subheader(f"👥 สมาชิก: {current_trip}")
-all_users = [row["name"] for row in conn.execute("SELECT name FROM all_users").fetchall()]
+all_users_list = [row["name"] for row in conn.execute("SELECT name FROM all_users").fetchall()]
 existing_members = [row["name"] for row in conn.execute("SELECT name FROM members WHERE trip_id = ?", (trip_id,)).fetchall()]
-available_users = [u for u in all_users if u not in existing_members]
+available_users = [u for u in all_users_list if u not in existing_members]
 
 selected_u = st.sidebar.selectbox("เพิ่มเพื่อน:", ["-- เลือก --"] + available_users)
 if st.sidebar.button("ดึงเข้าทริป"):
@@ -177,8 +238,14 @@ with tab3:
     st.header("🤝 สรุปยอด")
     conn = get_db_connection()
     expenses_rows = conn.execute("SELECT * FROM expenses WHERE trip_id = ?", (trip_id,)).fetchall()
+    
+    # ดึงข้อมูลบัญชีของสมาชิก
+    user_profiles = {row['name']: {"promptpay": row['promptpay'], "bank_name": row['bank_name'], "bank_acc": row['bank_account']} 
+                     for row in conn.execute("SELECT name, promptpay, bank_name, bank_account FROM all_users").fetchall()}
     conn.close()
-    if not expenses_rows: st.info("ยังไม่มีข้อมูล")
+    
+    if not expenses_rows: 
+        st.info("ยังไม่มีข้อมูล")
     else:
         net = {m: 0.0 for m in existing_members}
         for r in expenses_rows:
@@ -195,14 +262,41 @@ with tab3:
         for m, b in net.items():
             if b < -0.01: c2.error(f"{m}: {abs(b):,.2f}")
         
-        st.subheader("🚀 แผนการโอน")
+        st.subheader("🚀 แผนการโอนเงิน (คลิกปุ่มขวาบนของเลขเพื่อคัดลอก)")
         debtors = [[m, b] for m, b in net.items() if b < -0.01]
         creditors = [[m, b] for m, b in net.items() if b > 0.01]
         final_tx = []
+        
         while debtors and creditors:
             amt = min(abs(debtors[0][1]), creditors[0][1])
-            st.info(f"💳 **{debtors[0][0]}** โอนให้ **{creditors[0][0]}** จำนวน **{amt:,.2f}** บาท")
-            final_tx.append((debtors[0][0], creditors[0][0], amt))
+            debtor_name = debtors[0][0]
+            creditor_name = creditors[0][0]
+            
+            # ดึงข้อมูลบัญชีผู้รับ (Creditor) ป้องกันกรณีค่าเป็น None ด้วยการใช้ or ""
+            prof = user_profiles.get(creditor_name, {})
+            pp = (prof.get("promptpay") or "").strip()
+            b_name = (prof.get("bank_name") or "").strip()
+            b_acc = (prof.get("bank_acc") or "").strip()
+            
+            # แสดงรายการนำทางผู้โอน
+            st.markdown(f"💳 **{debtor_name}** โอนให้ 👉 **{creditor_name}** จำนวน **{amt:,.2f}** บาท")
+            
+            if pp or b_acc:
+                col_pp, col_bank = st.columns(2)
+                with col_pp:
+                    if pp:
+                        st.caption(f"📱 พร้อมเพย์ {creditor_name}")
+                        st.code(pp, language="text")
+                with col_bank:
+                    if b_acc:
+                        label = f"🏦 {b_name}" if b_name else "🏦 เลขบัญชี"
+                        st.caption(f"{label} ของ {creditor_name}")
+                        st.code(b_acc, language="text")
+            else:
+                st.warning(f"⚠️ {creditor_name} ยังไม่ได้บันทึกข้อมูลบัญชี")
+            
+            st.write("---")
+            final_tx.append((debtor_name, creditor_name, amt))
             debtors[0][1] += amt; creditors[0][1] -= amt
             if abs(debtors[0][1]) < 0.01: debtors.pop(0)
             if abs(creditors[0][1]) < 0.01: creditors.pop(0)
@@ -213,7 +307,6 @@ with tab3:
             for t in final_tx: conn.execute("INSERT INTO settlements (trip_id, debtor, creditor, amount) VALUES (?,?,?,?)", (trip_id, t[0], t[1], t[2]))
             conn.commit(); conn.close(); st.success("บันทึกแล้ว!"); st.rerun()
 
-        st.write("---")
         st.subheader("📋 ประวัติการเคลียร์")
         conn = get_db_connection()
         saved = pd.read_sql_query(f"SELECT debtor as 'จาก', creditor as 'ถึง', amount as 'จำนวน' FROM settlements WHERE trip_id = {trip_id}", conn)
