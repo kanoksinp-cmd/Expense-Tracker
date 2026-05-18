@@ -176,7 +176,7 @@ else:
     my_data = conn.execute("SELECT * FROM all_users WHERE name = ?", (st.session_state["current_online_user"],)).fetchone()
     conn.close()
     
-    with st.sidebar.expander("⚙️ แก้ไขโปรไฟล์/ข้อมูลรับเงินส่วนตัว"):
+    with st.sidebar.expander("⚙️ Update ข้อมูลส่วนตัว"):
         edit_pp = st.text_input("เลขพร้อมเพย์:", value=my_data['promptpay'] if my_data['promptpay'] else "")
         db_bank = my_data['bank_name'] if my_data['bank_name'] else "-- เลือกธนาคาร --"
         bank_idx = BANK_LIST.index(db_bank) if db_bank in BANK_LIST else 0
@@ -526,7 +526,7 @@ if st.session_state["current_online_user"]:
                             reply_key = f"reply_in_{partner}"
                             reply_text = st.text_input("พิมพ์ตอบกลับเพื่อนที่นี่:", placeholder=f"คุยกับ {partner}...", key=reply_key)
                             
-                            if st.form_submit_button("↩️ ส่งข้อความตอบกลับ", use_container_width=True, type="primary"):
+                            if st.form_submit_button("↩️ ตอบกลับ", use_container_width=True, type="primary"):
                                 if reply_text.strip():
                                     conn_reply = get_db_connection()
                                     conn_reply.execute(
